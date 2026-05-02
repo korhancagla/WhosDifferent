@@ -13,6 +13,7 @@ const rooms = {};
 const CODE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 const MAX_DRAWING_OPS = 25000;
 const EMPTY_ROOM_TTL_MS = 15 * 60 * 1000;
+const PLAYER_COLORS = ['#0f766e', '#e11d48', '#2563eb', '#f59e0b', '#7c3aed', '#16a34a', '#db2777', '#0891b2'];
 
 const DEFAULT_SETTINGS = {
   drawingSeconds: 120,
@@ -20,7 +21,7 @@ const DEFAULT_SETTINGS = {
   turnSeconds: 25,
   category: 'all',
   difficulty: 'all',
-  drawMode: 'simultaneous',
+  drawMode: 'turns',
   oddGuessEnabled: true,
 };
 
@@ -135,7 +136,7 @@ function clampSeconds(value, fallback, min = 15, max = 600) {
 function normalizeSettings(current, payload = {}) {
   const categoryValues = new Set(CATEGORIES.map((item) => item.value));
   const difficultyValues = new Set(DIFFICULTIES.map((item) => item.value));
-  const drawMode = payload.drawMode === 'turns' ? 'turns' : 'simultaneous';
+  const drawMode = payload.drawMode === 'simultaneous' || payload.drawMode === 'turns' ? payload.drawMode : current.drawMode;
 
   return {
     drawingSeconds: clampSeconds(payload.drawingSeconds, current.drawingSeconds),
@@ -169,6 +170,7 @@ function roomPlayers(room) {
     .map((player) => ({
       id: player.id,
       name: player.name,
+      color: player.color,
       isHost: player.id === room.hostId,
       ready: !!player.ready,
       connected: !!player.connected,
@@ -232,6 +234,7 @@ function buildRoomState(room, viewerId) {
     turn: {
       currentPlayerId: room.currentTurnPlayerId || '',
       currentPlayerName: room.players[room.currentTurnPlayerId]?.name || '',
+      currentPlayerColor: room.players[room.currentTurnPlayerId]?.color || '',
     },
     canStart: allNonHostsReady(room),
     history: room.roundHistory.slice(-8),
@@ -244,6 +247,7 @@ function buildRoomState(room, viewerId) {
           votedFor: room.votes[viewer.id] || '',
           ready: !!viewer.ready,
           score: Number(viewer.score) || 0,
+          color: viewer.color,
           hasGuessed: !!room.guesses[viewer.id],
           connected: !!viewer.connected,
           canDraw: canPlayerDraw(room, viewer.id),
@@ -479,10 +483,17 @@ function assertHost(socket, room) {
   return room && room.hostId === socket.data.playerId;
 }
 
-function normalizeDrawingOp(rawOp) {
+function nextPlayerColor(room) {
+  const usedColors = new Set(Object.values(room.players).map((player) => player.color).filter(Boolean));
+  const preferredIndex = Object.keys(room.players).length % PLAYER_COLORS.length;
+  const orderedColors = [...PLAYER_COLORS.slice(preferredIndex), ...PLAYER_COLORS.slice(0, preferredIndex)];
+  return orderedColors.find((color) => !usedColors.has(color)) || PLAYER_COLORS[preferredIndex];
+}
+
+function normalizeDrawingOp(rawOp, player) {
   const mode = rawOp?.mode === 'eraser' ? 'eraser' : 'pen';
   const size = Math.min(Math.max(Number(rawOp?.size) || 4, 1), 64);
-  const color = /^#[0-9a-f]{6}$/i.test(rawOp?.color || '') ? rawOp.color : '#111827';
+  const playerColor = /^#[0-9a-f]{6}$/i.test(player?.color || '') ? player.color : '#111827';
 
   const point = (value) => ({
     x: Math.min(Math.max(Number(value?.x) || 0, 0), 1),
@@ -492,7 +503,10 @@ function normalizeDrawingOp(rawOp) {
   return {
     from: point(rawOp?.from),
     to: point(rawOp?.to),
-    color,
+    color: playerColor,
+    playerColor,
+    playerId: player?.id || '',
+    playerName: cleanText(player?.name || 'Oyuncu', 24),
     size,
     mode,
   };
@@ -511,6 +525,7 @@ function attachSocketToPlayer(socket, room, playerId, name = '') {
   if (player) {
     player.socketId = socket.id;
     player.connected = true;
+    if (!player.color) player.color = nextPlayerColor(room);
     if (name) player.name = name;
     return player;
   }
@@ -519,6 +534,7 @@ function attachSocketToPlayer(socket, room, playerId, name = '') {
     id: playerId,
     socketId: socket.id,
     name,
+    color: nextPlayerColor(room),
     assignedWord: '',
     score: 0,
     ready: false,
@@ -714,7 +730,7 @@ io.on('connection', (socket) => {
     const playerId = socket.data.playerId;
     if (!room || !canPlayerDraw(room, playerId)) return;
 
-    const op = normalizeDrawingOp(rawOp);
+    const op = normalizeDrawingOp(rawOp, room.players[playerId]);
     room.drawingHistory.push(op);
     if (room.drawingHistory.length > MAX_DRAWING_OPS) {
       room.drawingHistory.splice(0, room.drawingHistory.length - MAX_DRAWING_OPS);
