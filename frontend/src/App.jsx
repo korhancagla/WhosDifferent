@@ -9,7 +9,6 @@ import {
   Eye,
   History,
   LogIn,
-  Palette,
   Pencil,
   Play,
   Plus,
@@ -31,8 +30,6 @@ const host = window.location.hostname || 'localhost';
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || `http://${host}:3001`;
 const CLIENT_ID_KEY = 'kim_farkli_client_id';
 const NAME_KEY = 'kim_farkli_name';
-
-const colorSwatches = ['#111827', '#e11d48', '#0f766e', '#2563eb', '#f59e0b', '#7c3aed'];
 
 const phaseMeta = {
   lobby: { label: 'Bekleme', tone: 'border-slate-600 bg-slate-800 text-slate-100' },
@@ -114,7 +111,6 @@ export default function App() {
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
   const [tool, setTool] = useState('pen');
-  const [color, setColor] = useState('#111827');
   const [size, setSize] = useState(5);
   const [guess, setGuess] = useState('');
   const [showHistory, setShowHistory] = useState(false);
@@ -178,14 +174,15 @@ export default function App() {
     const fromY = op.from.y * rect.height;
     const toX = op.to.x * rect.width;
     const toY = op.to.y * rect.height;
+    const strokeColor = op.playerColor || op.color || '#111827';
 
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.lineWidth = op.size;
     ctx.globalCompositeOperation = op.mode === 'eraser' ? 'destination-out' : 'source-over';
-    ctx.strokeStyle = op.color;
-    ctx.fillStyle = op.color;
+    ctx.strokeStyle = strokeColor;
+    ctx.fillStyle = strokeColor;
 
     if (Math.abs(fromX - toX) < 0.2 && Math.abs(fromY - toY) < 0.2) {
       ctx.beginPath();
@@ -351,6 +348,17 @@ export default function App() {
     emitSocket('draw', op);
   };
 
+  const localDrawPayload = (from, to) => ({
+    from,
+    to,
+    color: room?.me?.color || '#111827',
+    playerColor: room?.me?.color || '#111827',
+    playerId: room?.me?.id || '',
+    playerName: room?.me?.name || '',
+    size: Number(size),
+    mode: tool,
+  });
+
   const handlePointerDown = (event) => {
     if (!canDraw) return;
     event.preventDefault();
@@ -370,7 +378,7 @@ export default function App() {
     if (Math.sqrt(dx * dx + dy * dy) < 0.002) return;
 
     hasMovedRef.current = true;
-    emitDraw({ from: lastPoint, to: nextPoint, color, size: Number(size), mode: tool });
+    emitDraw(localDrawPayload(lastPoint, nextPoint));
     lastPointRef.current = nextPoint;
   };
 
@@ -379,7 +387,7 @@ export default function App() {
     event.preventDefault();
     const point = getCanvasPoint(event);
     if (!hasMovedRef.current) {
-      emitDraw({ from: point, to: point, color, size: Number(size), mode: tool });
+      emitDraw(localDrawPayload(point, point));
     }
     isDrawingRef.current = false;
     lastPointRef.current = null;
@@ -496,8 +504,6 @@ export default function App() {
                 canDraw={canDraw}
                 tool={tool}
                 setTool={setTool}
-                color={color}
-                setColor={setColor}
                 size={size}
                 setSize={setSize}
                 canvasRef={canvasRef}
@@ -736,8 +742,6 @@ function Game(props) {
     canDraw,
     tool,
     setTool,
-    color,
-    setColor,
     size,
     setSize,
     canvasRef,
@@ -752,6 +756,7 @@ function Game(props) {
   } = props;
   const phase = room.phase;
   const turnName = room.turn?.currentPlayerName;
+  const turnColor = room.turn?.currentPlayerColor || '#64748b';
 
   return (
     <main className="mx-auto grid max-w-7xl gap-4 px-4 py-4 xl:grid-cols-[270px_1fr_330px]">
@@ -794,7 +799,12 @@ function Game(props) {
           />
           {!canDraw && phase === 'drawing' && (
             <div className="pointer-events-none absolute inset-x-4 top-4 rounded-lg border border-slate-300 bg-white/92 px-3 py-2 text-center text-sm font-bold text-slate-700 shadow">
-              {room.settings.drawMode === 'turns' ? `Sıra ${turnName || 'oyuncu'} oyuncusunda.` : 'Canvas tur başlayınca açılır.'}
+              {room.settings.drawMode === 'turns' ? (
+                <span className="inline-flex items-center justify-center gap-2">
+                  <span className="h-3 w-3 rounded-full" style={{ backgroundColor: turnColor }} />
+                  Sıra {turnName || 'oyuncu'} oyuncusunda.
+                </span>
+              ) : 'Canvas tur başlayınca açılır.'}
             </div>
           )}
           {phase === 'voting' && (
@@ -803,8 +813,9 @@ function Game(props) {
             </div>
           )}
           {room.settings.drawMode === 'turns' && phase === 'drawing' && (
-            <div className="absolute bottom-4 left-4 rounded-lg border border-slate-300 bg-white/92 px-3 py-2 text-sm font-black text-slate-800 shadow">
-              <span className="text-slate-500">Sıra:</span> {turnName || '-'} <span className="ml-2 font-mono text-amber-600">{formatTime(timer.turn?.timeLeft || 0)}</span>
+            <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-lg border border-slate-300 bg-white/92 px-3 py-2 text-sm font-black text-slate-800 shadow">
+              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: turnColor }} />
+              <span className="text-slate-500">Sıra:</span> {turnName || '-'} <span className="font-mono text-amber-600">{formatTime(timer.turn?.timeLeft || 0)}</span>
             </div>
           )}
         </div>
@@ -815,8 +826,6 @@ function Game(props) {
           <DrawingTools
             tool={tool}
             setTool={setTool}
-            color={color}
-            setColor={setColor}
             size={size}
             setSize={setSize}
             isHost={isHost}
@@ -854,7 +863,10 @@ function Game(props) {
   );
 }
 
-function DrawingTools({ tool, setTool, color, setColor, size, setSize, isHost, emitSocket, room }) {
+function DrawingTools({ tool, setTool, size, setSize, isHost, emitSocket, room }) {
+  const myColor = room.me?.color || '#111827';
+  const turnColor = room.turn?.currentPlayerColor || '#64748b';
+
   return (
     <div className="space-y-5">
       <div>
@@ -865,25 +877,14 @@ function DrawingTools({ tool, setTool, color, setColor, size, setSize, isHost, e
         </div>
       </div>
 
-      <div>
-        <div className="mb-2 text-sm font-black uppercase tracking-widest text-slate-500">Renk</div>
-        <div className="flex flex-wrap gap-2">
-          {colorSwatches.map((swatch) => (
-            <button
-              key={swatch}
-              onClick={() => setColor(swatch)}
-              title={swatch}
-              className={`h-9 w-9 rounded-full border-2 ${color === swatch ? 'border-white' : 'border-slate-700'}`}
-              style={{ backgroundColor: swatch }}
-            />
-          ))}
-          <input
-            aria-label="Özel renk"
-            type="color"
-            value={color}
-            onChange={(event) => setColor(event.target.value)}
-            className="h-9 w-12 rounded-lg border border-slate-700 bg-slate-800 p-1"
-          />
+      <div className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-3">
+        <div className="mb-2 text-sm font-black uppercase tracking-widest text-slate-500">Oyuncu rengin</div>
+        <div className="flex items-center gap-3">
+          <span className="h-10 w-10 shrink-0 rounded-full border-2 border-white/70 shadow-lg shadow-black/30" style={{ backgroundColor: myColor }} />
+          <div className="min-w-0">
+            <div className="truncate font-black text-white">{room.me?.name || 'Sen'}</div>
+            <div className="text-xs font-semibold text-slate-500">Çizgilerin bu renkle görünür.</div>
+          </div>
         </div>
       </div>
 
@@ -912,7 +913,11 @@ function DrawingTools({ tool, setTool, color, setColor, size, setSize, isHost, e
 
       {room.settings.drawMode === 'turns' && (
         <div className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-sm text-slate-300">
-          <span className="font-black text-white">{room.turn.currentPlayerName || '-'}</span> çiziyor.
+          <div className="mb-1 text-xs font-black uppercase tracking-widest text-slate-500">Şu an çizen</div>
+          <div className="flex items-center gap-2">
+            <span className="h-3.5 w-3.5 rounded-full" style={{ backgroundColor: turnColor }} />
+            <span className="font-black text-white">{room.turn.currentPlayerName || '-'}</span>
+          </div>
         </div>
       )}
     </div>
@@ -950,7 +955,10 @@ function VotingPanel({ room, isHost, emitSocket, voteTargetName }) {
                 : 'border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700'
             }`}
           >
-            <span className="font-bold">{player.name}</span>
+            <span className="flex min-w-0 items-center gap-2">
+              <span className="h-3.5 w-3.5 shrink-0 rounded-full border border-white/50" style={{ backgroundColor: player.color || '#64748b' }} />
+              <span className="min-w-0 truncate font-bold">{player.name}</span>
+            </span>
             {room.me?.votedFor === player.id ? <Check className="h-5 w-5" /> : <Send className="h-4 w-4" />}
           </button>
         ))}
@@ -970,6 +978,7 @@ function VotingPanel({ room, isHost, emitSocket, voteTargetName }) {
 
 function PlayerPanel({ room }) {
   const sortedScores = [...room.players].sort((a, b) => b.score - a.score);
+  const leader = sortedScores[0];
   const displayPlayers = [...room.players].sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     if (a.isHost !== b.isHost) return a.isHost ? -1 : 1;
@@ -982,6 +991,18 @@ function PlayerPanel({ room }) {
         <h2 className="font-black text-white">Oyuncular</h2>
         <span className="rounded-full bg-slate-800 px-2 py-1 text-xs font-bold text-slate-300">{room.players.filter((player) => player.connected).length}</span>
       </div>
+      {leader && (
+        <div className="mb-3 rounded-lg border border-amber-400/40 bg-amber-950/35 px-3 py-2">
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span className="inline-flex min-w-0 items-center gap-2 font-black text-amber-100">
+              <Crown className="h-4 w-4 shrink-0 text-amber-300" />
+              <span className="truncate">{leader.name}</span>
+            </span>
+            <span className="font-mono font-black text-amber-200">{leader.score}</span>
+          </div>
+          <div className="mt-1 text-xs font-semibold uppercase tracking-widest text-amber-200/60">En yüksek puan</div>
+        </div>
+      )}
       <div className="space-y-2">
         {displayPlayers.map((player, index) => (
           <div
@@ -995,8 +1016,11 @@ function PlayerPanel({ room }) {
             } ${!player.connected ? 'opacity-50' : ''}`}
           >
             <div className="flex min-w-0 items-center gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-950 font-black text-slate-200">
-                {playerInitial(player.name)}
+              <div className="relative shrink-0">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-950 font-black text-slate-200">
+                  {playerInitial(player.name)}
+                </div>
+                <span className="absolute -bottom-1 -right-1 h-4 w-4 rounded-full border-2 border-slate-900" style={{ backgroundColor: player.color || '#64748b' }} />
               </div>
               <div className="min-w-0">
                 <div className="truncate font-bold text-slate-100">
@@ -1020,7 +1044,10 @@ function PlayerPanel({ room }) {
         <div className="space-y-1">
           {sortedScores.slice(0, 5).map((player, index) => (
             <div key={player.id} className="flex items-center justify-between text-sm">
-              <span className="truncate text-slate-300">{index + 1}. {player.name}</span>
+              <span className="flex min-w-0 items-center gap-2 text-slate-300">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: player.color || '#64748b' }} />
+                <span className="truncate">{index + 1}. {player.name}</span>
+              </span>
               <span className="font-mono font-black text-amber-200">{player.score}</span>
             </div>
           ))}
@@ -1062,7 +1089,10 @@ function ResultPanel({ room, isHost, onNewRound }) {
         <div className="space-y-2">
           {room.players.map((player) => (
             <div key={player.id} className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-800 px-3 py-2">
-              <span className="font-bold text-slate-200">{player.name}</span>
+              <span className="flex min-w-0 items-center gap-2 font-bold text-slate-200">
+                <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: player.color || '#64748b' }} />
+                <span className="truncate">{player.name}</span>
+              </span>
               <span className="font-mono text-lg font-black text-amber-200">{counts[player.id] || 0}</span>
             </div>
           ))}
@@ -1074,7 +1104,10 @@ function ResultPanel({ room, isHost, onNewRound }) {
         <div className="space-y-2">
           {(room.result?.scores || []).map((player, index) => (
             <div key={player.id} className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-800 px-3 py-2">
-              <span className="font-bold text-slate-200">{index + 1}. {player.name}</span>
+              <span className="flex min-w-0 items-center gap-2 font-bold text-slate-200">
+                <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: player.color || '#64748b' }} />
+                <span className="truncate">{index + 1}. {player.name}</span>
+              </span>
               <span className="font-mono text-lg font-black text-teal-200">{player.score}</span>
             </div>
           ))}
