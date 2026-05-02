@@ -11,3 +11,17 @@
     @apply bg-slate-900 text-slate-100;
   }
 }
+
+@keyframes spark {
+  0% {
+    transform: translateY(20px) rotate(0deg) scale(0.8);
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.9;
+  }
+  100% {
+    transform: translateY(-120px) rotate(240deg) scale(1.2);
+    opacity: 0;
+  }
+}
