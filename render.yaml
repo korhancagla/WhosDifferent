@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: kim-farkli-api
+    runtime: node
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
