@@ -30,7 +30,6 @@ import VisualScene from './VisualScene.jsx';
 const host = window.location.hostname || 'localhost';
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || `http://${host}:3001`;
 const CLIENT_ID_KEY = 'kim_farkli_client_id';
-const SESSION_KEY = 'kim_farkli_session';
 const NAME_KEY = 'kim_farkli_name';
 
 const colorSwatches = ['#111827', '#e11d48', '#0f766e', '#2563eb', '#f59e0b', '#7c3aed'];
@@ -43,23 +42,11 @@ const phaseMeta = {
 };
 
 function getClientId() {
-  const existing = localStorage.getItem(CLIENT_ID_KEY);
+  const existing = sessionStorage.getItem(CLIENT_ID_KEY);
   if (existing) return existing;
   const next = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  localStorage.setItem(CLIENT_ID_KEY, next);
+  sessionStorage.setItem(CLIENT_ID_KEY, next);
   return next;
-}
-
-function readSession() {
-  try {
-    return JSON.parse(localStorage.getItem(SESSION_KEY)) || null;
-  } catch {
-    return null;
-  }
-}
-
-function writeSession(code, name) {
-  localStorage.setItem(SESSION_KEY, JSON.stringify({ code, name }));
 }
 
 function formatTime(totalSeconds = 0) {
@@ -250,12 +237,6 @@ export default function App() {
 
     nextSocket.on('connect', () => {
       setConnection('connected');
-      const session = readSession();
-      if (session?.code) {
-        nextSocket.emit('resume-room', { code: session.code, clientId: clientIdRef.current }, (response) => {
-          if (!response?.ok) localStorage.removeItem(SESSION_KEY);
-        });
-      }
     });
     nextSocket.on('disconnect', () => setConnection('disconnected'));
     nextSocket.on('connect_error', () => setConnection('error'));
@@ -267,10 +248,7 @@ export default function App() {
       setError('');
       setGuess('');
 
-      if (nextRoom.code && nextRoom.me?.name) {
-        writeSession(nextRoom.code, nextRoom.me.name);
-        localStorage.setItem(NAME_KEY, nextRoom.me.name);
-      }
+      if (nextRoom.me?.name) localStorage.setItem(NAME_KEY, nextRoom.me.name);
 
       if (previousPhase && previousPhase !== nextRoom.phase) {
         if (nextRoom.phase === 'drawing') play('start');
@@ -326,7 +304,6 @@ export default function App() {
         return;
       }
       localStorage.setItem(NAME_KEY, playerName.trim());
-      writeSession(response.code || joinCode, playerName.trim());
       setJoinCode(response.code || joinCode);
       play('ready');
     });
@@ -339,7 +316,7 @@ export default function App() {
       setError('Oyuncu adını yazmalısın.');
       return;
     }
-    runWithAck('create-room', { name });
+    runWithAck('create-room', { name, code: joinCode.trim() });
   };
 
   const handleJoinRoom = (event) => {
@@ -581,7 +558,7 @@ function Landing({ playerName, setPlayerName, joinCode, setJoinCode, connection,
               <span className="mb-2 block text-sm font-semibold text-slate-300">Oda kodu</span>
               <input
                 value={joinCode}
-                onChange={(event) => setJoinCode(event.target.value.toLocaleLowerCase('tr-TR'))}
+                onChange={(event) => setJoinCode(event.target.value.toLowerCase())}
                 maxLength={16}
                 className="w-full rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 font-mono text-white outline-none transition focus:border-amber-400"
                 placeholder="k7p9"
