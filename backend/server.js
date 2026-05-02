@@ -119,7 +119,7 @@ function cleanText(value, maxLength = 32) {
 }
 
 function normalizeCode(value) {
-  return cleanText(value, 16).toLocaleLowerCase('tr-TR').replace(/[^a-z0-9-]/g, '');
+  return cleanText(value, 16).toLowerCase().replace(/[^a-z0-9-]/g, '');
 }
 
 function normalizeGuess(value) {
@@ -554,7 +554,17 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const code = createRoomCode();
+    const requestedCode = normalizeCode(payload.code);
+    const code = requestedCode || createRoomCode();
+    if (requestedCode && requestedCode.length < 3) {
+      ack({ ok: false, error: 'Oda kodu en az 3 karakter olmalı.' });
+      return;
+    }
+    if (rooms[code]) {
+      ack({ ok: false, error: 'Bu oda kodu zaten aktif. Katılmayı deneyebilir ya da başka kod yazabilirsin.' });
+      return;
+    }
+
     rooms[code] = {
       code,
       hostId: playerId,
