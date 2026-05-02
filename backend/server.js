@@ -10,68 +10,96 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
 
 const rooms = {};
-const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const CODE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 const MAX_DRAWING_OPS = 25000;
+const EMPTY_ROOM_TTL_MS = 15 * 60 * 1000;
+
 const DEFAULT_SETTINGS = {
   drawingSeconds: 120,
   votingSeconds: 45,
+  turnSeconds: 25,
+  category: 'all',
+  difficulty: 'all',
+  drawMode: 'simultaneous',
+  oddGuessEnabled: true,
 };
 
+const CATEGORIES = [
+  { value: 'all', label: 'Karışık' },
+  { value: 'animal', label: 'Hayvanlar' },
+  { value: 'food', label: 'Yemek' },
+  { value: 'place', label: 'Yerler' },
+  { value: 'object', label: 'Eşyalar' },
+  { value: 'job', label: 'Meslekler' },
+  { value: 'vehicle', label: 'Araçlar' },
+  { value: 'nature', label: 'Doğa' },
+  { value: 'fantasy', label: 'Fantastik' },
+  { value: 'sport', label: 'Spor' },
+];
+
+const DIFFICULTIES = [
+  { value: 'all', label: 'Karışık' },
+  { value: 'easy', label: 'Kolay' },
+  { value: 'medium', label: 'Orta' },
+  { value: 'hard', label: 'Zor' },
+];
+
 const WORD_PAIRS = [
-  { mainWord: 'Kedi', differentWord: 'Köpek' },
-  { mainWord: 'Deniz', differentWord: 'Göl' },
-  { mainWord: 'Kahve', differentWord: 'Çay' },
-  { mainWord: 'Tren', differentWord: 'Metro' },
-  { mainWord: 'Gitar', differentWord: 'Keman' },
-  { mainWord: 'Pizza', differentWord: 'Lahmacun' },
-  { mainWord: 'Ay', differentWord: 'Güneş' },
-  { mainWord: 'Kalem', differentWord: 'Fırça' },
-  { mainWord: 'Uçak', differentWord: 'Helikopter' },
-  { mainWord: 'Elma', differentWord: 'Armut' },
-  { mainWord: 'Dağ', differentWord: 'Tepe' },
-  { mainWord: 'Doktor', differentWord: 'Hemşire' },
-  { mainWord: 'Sinema', differentWord: 'Tiyatro' },
-  { mainWord: 'Futbol', differentWord: 'Basketbol' },
-  { mainWord: 'Balık', differentWord: 'Yunus' },
-  { mainWord: 'Kütüphane', differentWord: 'Kitapçı' },
-  { mainWord: 'Çanta', differentWord: 'Valiz' },
-  { mainWord: 'Saat', differentWord: 'Takvim' },
-  { mainWord: 'Köprü', differentWord: 'Tünel' },
-  { mainWord: 'Orman', differentWord: 'Bahçe' },
-  { mainWord: 'Bisiklet', differentWord: 'Motosiklet' },
-  { mainWord: 'Pasta', differentWord: 'Kurabiye' },
-  { mainWord: 'Müze', differentWord: 'Galeri' },
-  { mainWord: 'Robot', differentWord: 'Bilgisayar' },
-  { mainWord: 'Korsan', differentWord: 'Denizci' },
-  { mainWord: 'Şemsiye', differentWord: 'Yağmurluk' },
-  { mainWord: 'Kale', differentWord: 'Saray' },
-  { mainWord: 'Limon', differentWord: 'Portakal' },
-  { mainWord: 'Kamera', differentWord: 'Telefon' },
-  { mainWord: 'Kamp', differentWord: 'Piknik' },
-  { mainWord: 'Kardan Adam', differentWord: 'Buz Pateni' },
-  { mainWord: 'Astronot', differentWord: 'Pilot' },
-  { mainWord: 'Balon', differentWord: 'Uçurtma' },
-  { mainWord: 'Ada', differentWord: 'Sahil' },
-  { mainWord: 'Ayna', differentWord: 'Pencere' },
-  { mainWord: 'Çorap', differentWord: 'Ayakkabı' },
-  { mainWord: 'Davul', differentWord: 'Piyano' },
-  { mainWord: 'Fırın', differentWord: 'Ocak' },
-  { mainWord: 'Harita', differentWord: 'Pusula' },
-  { mainWord: 'İtfaiye', differentWord: 'Ambulans' },
-  { mainWord: 'Kaktüs', differentWord: 'Çiçek' },
-  { mainWord: 'Kaplumbağa', differentWord: 'Tavşan' },
-  { mainWord: 'Karavan', differentWord: 'Otel' },
-  { mainWord: 'Kum Saati', differentWord: 'Saat' },
-  { mainWord: 'Mağara', differentWord: 'Dağ Evi' },
-  { mainWord: 'Makas', differentWord: 'Bıçak' },
-  { mainWord: 'Okul', differentWord: 'Üniversite' },
-  { mainWord: 'Palyaço', differentWord: 'Sihirbaz' },
-  { mainWord: 'Roket', differentWord: 'Uydu' },
-  { mainWord: 'Şelale', differentWord: 'Nehir' },
-  { mainWord: 'Taksi', differentWord: 'Otobüs' },
-  { mainWord: 'Tencere', differentWord: 'Tava' },
-  { mainWord: 'Yastık', differentWord: 'Battaniye' },
-  { mainWord: 'Zebra', differentWord: 'At' },
+  { mainWord: 'Kedi', differentWord: 'Köpek', category: 'animal', difficulty: 'easy' },
+  { mainWord: 'Kaplumbağa', differentWord: 'Tavşan', category: 'animal', difficulty: 'easy' },
+  { mainWord: 'Zebra', differentWord: 'At', category: 'animal', difficulty: 'easy' },
+  { mainWord: 'Balık', differentWord: 'Yunus', category: 'animal', difficulty: 'medium' },
+  { mainWord: 'Kelebek', differentWord: 'Arı', category: 'animal', difficulty: 'medium' },
+  { mainWord: 'Baykuş', differentWord: 'Kartal', category: 'animal', difficulty: 'hard' },
+  { mainWord: 'Pizza', differentWord: 'Lahmacun', category: 'food', difficulty: 'easy' },
+  { mainWord: 'Kahve', differentWord: 'Çay', category: 'food', difficulty: 'easy' },
+  { mainWord: 'Elma', differentWord: 'Armut', category: 'food', difficulty: 'easy' },
+  { mainWord: 'Limon', differentWord: 'Portakal', category: 'food', difficulty: 'easy' },
+  { mainWord: 'Pasta', differentWord: 'Kurabiye', category: 'food', difficulty: 'medium' },
+  { mainWord: 'Tencere', differentWord: 'Tava', category: 'food', difficulty: 'medium' },
+  { mainWord: 'Fırın', differentWord: 'Ocak', category: 'food', difficulty: 'medium' },
+  { mainWord: 'Suşi', differentWord: 'Mantı', category: 'food', difficulty: 'hard' },
+  { mainWord: 'Kütüphane', differentWord: 'Kitapçı', category: 'place', difficulty: 'medium' },
+  { mainWord: 'Sinema', differentWord: 'Tiyatro', category: 'place', difficulty: 'easy' },
+  { mainWord: 'Müze', differentWord: 'Galeri', category: 'place', difficulty: 'medium' },
+  { mainWord: 'Kale', differentWord: 'Saray', category: 'place', difficulty: 'easy' },
+  { mainWord: 'Mağara', differentWord: 'Dağ Evi', category: 'place', difficulty: 'hard' },
+  { mainWord: 'Ada', differentWord: 'Sahil', category: 'place', difficulty: 'medium' },
+  { mainWord: 'Okul', differentWord: 'Üniversite', category: 'place', difficulty: 'easy' },
+  { mainWord: 'Kalem', differentWord: 'Fırça', category: 'object', difficulty: 'easy' },
+  { mainWord: 'Çanta', differentWord: 'Valiz', category: 'object', difficulty: 'easy' },
+  { mainWord: 'Saat', differentWord: 'Takvim', category: 'object', difficulty: 'medium' },
+  { mainWord: 'Ayna', differentWord: 'Pencere', category: 'object', difficulty: 'medium' },
+  { mainWord: 'Çorap', differentWord: 'Ayakkabı', category: 'object', difficulty: 'easy' },
+  { mainWord: 'Makas', differentWord: 'Bıçak', category: 'object', difficulty: 'medium' },
+  { mainWord: 'Şemsiye', differentWord: 'Yağmurluk', category: 'object', difficulty: 'medium' },
+  { mainWord: 'Kum Saati', differentWord: 'Saat', category: 'object', difficulty: 'hard' },
+  { mainWord: 'Doktor', differentWord: 'Hemşire', category: 'job', difficulty: 'easy' },
+  { mainWord: 'Astronot', differentWord: 'Pilot', category: 'job', difficulty: 'medium' },
+  { mainWord: 'Korsan', differentWord: 'Denizci', category: 'job', difficulty: 'medium' },
+  { mainWord: 'Palyaço', differentWord: 'Sihirbaz', category: 'job', difficulty: 'medium' },
+  { mainWord: 'İtfaiyeci', differentWord: 'Paramedik', category: 'job', difficulty: 'hard' },
+  { mainWord: 'Tren', differentWord: 'Metro', category: 'vehicle', difficulty: 'easy' },
+  { mainWord: 'Uçak', differentWord: 'Helikopter', category: 'vehicle', difficulty: 'easy' },
+  { mainWord: 'Bisiklet', differentWord: 'Motosiklet', category: 'vehicle', difficulty: 'easy' },
+  { mainWord: 'Taksi', differentWord: 'Otobüs', category: 'vehicle', difficulty: 'easy' },
+  { mainWord: 'Karavan', differentWord: 'Otel', category: 'vehicle', difficulty: 'hard' },
+  { mainWord: 'Roket', differentWord: 'Uydu', category: 'vehicle', difficulty: 'medium' },
+  { mainWord: 'Deniz', differentWord: 'Göl', category: 'nature', difficulty: 'easy' },
+  { mainWord: 'Ay', differentWord: 'Güneş', category: 'nature', difficulty: 'easy' },
+  { mainWord: 'Dağ', differentWord: 'Tepe', category: 'nature', difficulty: 'easy' },
+  { mainWord: 'Orman', differentWord: 'Bahçe', category: 'nature', difficulty: 'easy' },
+  { mainWord: 'Şelale', differentWord: 'Nehir', category: 'nature', difficulty: 'medium' },
+  { mainWord: 'Kaktüs', differentWord: 'Çiçek', category: 'nature', difficulty: 'medium' },
+  { mainWord: 'Kardan Adam', differentWord: 'Buz Pateni', category: 'nature', difficulty: 'hard' },
+  { mainWord: 'Robot', differentWord: 'Bilgisayar', category: 'fantasy', difficulty: 'easy' },
+  { mainWord: 'Ejderha', differentWord: 'Dinozor', category: 'fantasy', difficulty: 'easy' },
+  { mainWord: 'Cadı', differentWord: 'Büyücü', category: 'fantasy', difficulty: 'medium' },
+  { mainWord: 'Hazine', differentWord: 'Define Haritası', category: 'fantasy', difficulty: 'hard' },
+  { mainWord: 'Futbol', differentWord: 'Basketbol', category: 'sport', difficulty: 'easy' },
+  { mainWord: 'Tenis', differentWord: 'Badminton', category: 'sport', difficulty: 'medium' },
+  { mainWord: 'Kayak', differentWord: 'Snowboard', category: 'sport', difficulty: 'medium' },
+  { mainWord: 'Satranç', differentWord: 'Dama', category: 'sport', difficulty: 'hard' },
 ];
 
 app.get('/health', (_req, res) => {
@@ -91,7 +119,11 @@ function cleanText(value, maxLength = 32) {
 }
 
 function normalizeCode(value) {
-  return cleanText(value, 16).toUpperCase().replace(/[^A-Z0-9-]/g, '');
+  return cleanText(value, 16).toLocaleLowerCase('tr-TR').replace(/[^a-z0-9-]/g, '');
+}
+
+function normalizeGuess(value) {
+  return cleanText(value, 32).toLocaleLowerCase('tr-TR');
 }
 
 function clampSeconds(value, fallback, min = 15, max = 600) {
@@ -100,43 +132,35 @@ function clampSeconds(value, fallback, min = 15, max = 600) {
   return Math.min(Math.max(seconds, min), max);
 }
 
-function pickWordPair() {
-  return WORD_PAIRS[Math.floor(Math.random() * WORD_PAIRS.length)];
-}
+function normalizeSettings(current, payload = {}) {
+  const categoryValues = new Set(CATEGORIES.map((item) => item.value));
+  const difficultyValues = new Set(DIFFICULTIES.map((item) => item.value));
+  const drawMode = payload.drawMode === 'turns' ? 'turns' : 'simultaneous';
 
-function clearRoomTimer(room) {
-  if (room?.timerInterval) clearInterval(room.timerInterval);
-  if (room) {
-    room.timerInterval = null;
-    room.phaseEndsAt = null;
-    room.phaseDuration = 0;
-  }
-}
-
-function getTimerState(room) {
-  if (!room || !room.phaseEndsAt) {
-    return { timeLeft: 0, total: 0 };
-  }
   return {
-    timeLeft: Math.max(0, Math.ceil((room.phaseEndsAt - Date.now()) / 1000)),
-    total: room.phaseDuration || 0,
+    drawingSeconds: clampSeconds(payload.drawingSeconds, current.drawingSeconds),
+    votingSeconds: clampSeconds(payload.votingSeconds, current.votingSeconds),
+    turnSeconds: clampSeconds(payload.turnSeconds, current.turnSeconds, 10, 120),
+    category: categoryValues.has(payload.category) ? payload.category : current.category,
+    difficulty: difficultyValues.has(payload.difficulty) ? payload.difficulty : current.difficulty,
+    drawMode,
+    oddGuessEnabled: payload.oddGuessEnabled !== false,
   };
 }
 
-function startRoomTimer(room, seconds, onEnd) {
-  clearRoomTimer(room);
-  room.phaseDuration = seconds;
-  room.phaseEndsAt = Date.now() + seconds * 1000;
-  io.to(room.code).emit('timer-tick', getTimerState(room));
+function activePlayers(room) {
+  return Object.values(room.players)
+    .filter((player) => player.connected)
+    .sort((a, b) => a.joinedAt - b.joinedAt);
+}
 
-  room.timerInterval = setInterval(() => {
-    const timer = getTimerState(room);
-    io.to(room.code).emit('timer-tick', timer);
-    if (timer.timeLeft <= 0) {
-      clearRoomTimer(room);
-      onEnd();
-    }
-  }, 1000);
+function connectedPlayerIds(room) {
+  return activePlayers(room).map((player) => player.id);
+}
+
+function allNonHostsReady(room) {
+  const players = activePlayers(room);
+  return players.length >= 2 && players.every((player) => player.id === room.hostId || player.ready);
 }
 
 function roomPlayers(room) {
@@ -146,7 +170,11 @@ function roomPlayers(room) {
       id: player.id,
       name: player.name,
       isHost: player.id === room.hostId,
+      ready: !!player.ready,
+      connected: !!player.connected,
+      score: Number(player.score) || 0,
       hasVoted: !!room.votes[player.id],
+      hasGuessed: !!room.guesses[player.id],
     }));
 }
 
@@ -166,6 +194,24 @@ function translatedVotes(room) {
   }));
 }
 
+function getTimerState(room) {
+  const phaseTimer = room.phaseEndsAt
+    ? {
+        timeLeft: Math.max(0, Math.ceil((room.phaseEndsAt - Date.now()) / 1000)),
+        total: room.phaseDuration || 0,
+      }
+    : { timeLeft: 0, total: 0 };
+
+  const turnTimer = room.turnEndsAt
+    ? {
+        timeLeft: Math.max(0, Math.ceil((room.turnEndsAt - Date.now()) / 1000)),
+        total: room.turnDuration || 0,
+      }
+    : { timeLeft: 0, total: 0 };
+
+  return { ...phaseTimer, turn: turnTimer };
+}
+
 function buildRoomState(room, viewerId) {
   const viewer = room.players[viewerId];
   const isHost = viewerId === room.hostId;
@@ -175,9 +221,20 @@ function buildRoomState(room, viewerId) {
     code: room.code,
     hostId: room.hostId,
     phase: room.phase,
+    roundNumber: room.roundNumber,
     players: roomPlayers(room),
     settings: room.settings,
+    options: {
+      categories: CATEGORIES,
+      difficulties: DIFFICULTIES,
+    },
     timer: getTimerState(room),
+    turn: {
+      currentPlayerId: room.currentTurnPlayerId || '',
+      currentPlayerName: room.players[room.currentTurnPlayerId]?.name || '',
+    },
+    canStart: allNonHostsReady(room),
+    history: room.roundHistory.slice(-8),
     me: viewer
       ? {
           id: viewer.id,
@@ -185,6 +242,11 @@ function buildRoomState(room, viewerId) {
           isHost,
           word: viewer.assignedWord || '',
           votedFor: room.votes[viewer.id] || '',
+          ready: !!viewer.ready,
+          score: Number(viewer.score) || 0,
+          hasGuessed: !!room.guesses[viewer.id],
+          connected: !!viewer.connected,
+          canDraw: canPlayerDraw(room, viewer.id),
         }
       : null,
     result: resultVisible
@@ -194,8 +256,10 @@ function buildRoomState(room, viewerId) {
           mainWord: room.mainWord,
           differentWord: room.differentWord,
           winner: room.winner,
+          reason: room.resultReason,
           voteCounts: voteCounts(room),
           votes: translatedVotes(room),
+          scores: roomPlayers(room).sort((a, b) => b.score - a.score),
         }
       : null,
   };
@@ -204,7 +268,10 @@ function buildRoomState(room, viewerId) {
 function emitRoomState(room) {
   if (!room) return;
   Object.keys(room.players).forEach((playerId) => {
-    io.to(playerId).emit('room-state', buildRoomState(room, playerId));
+    const player = room.players[playerId];
+    if (player.connected && player.socketId) {
+      io.to(player.socketId).emit('room-state', buildRoomState(room, playerId));
+    }
   });
 }
 
@@ -212,22 +279,91 @@ function emitRoomMessage(room, message) {
   if (room) io.to(room.code).emit('room-message', message);
 }
 
+function emitTimer(room) {
+  if (!room) return;
+  io.to(room.code).emit('timer-tick', getTimerState(room));
+}
+
+function clearRoomTimer(room) {
+  if (room?.timerInterval) clearInterval(room.timerInterval);
+  if (room) {
+    room.timerInterval = null;
+    room.phaseEndsAt = null;
+    room.phaseDuration = 0;
+    room.turnEndsAt = null;
+    room.turnDuration = 0;
+  }
+}
+
 function resetRound(room) {
   clearRoomTimer(room);
   room.phase = 'lobby';
   room.differentPlayerId = '';
   room.votes = {};
+  room.guesses = {};
   room.winner = null;
+  room.resultReason = '';
   room.drawingHistory = [];
   room.mainWord = '';
   room.differentWord = '';
+  room.currentTurnIndex = 0;
+  room.currentTurnPlayerId = '';
   Object.values(room.players).forEach((player) => {
     player.assignedWord = '';
+    player.ready = false;
   });
 }
 
-function resolveVoting(room) {
+function pickWordPair(room) {
+  const filtered = WORD_PAIRS.filter((pair) => {
+    const categoryOk = room.settings.category === 'all' || pair.category === room.settings.category;
+    const difficultyOk = room.settings.difficulty === 'all' || pair.difficulty === room.settings.difficulty;
+    return categoryOk && difficultyOk;
+  });
+  const pool = filtered.length ? filtered : WORD_PAIRS;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function assignScores(room) {
+  const differentPlayer = room.players[room.differentPlayerId];
+  if (!differentPlayer) return;
+
+  if (room.winner === 'majority') {
+    Object.values(room.players).forEach((player) => {
+      if (player.id !== room.differentPlayerId) player.score = (player.score || 0) + 1;
+    });
+    return;
+  }
+
+  if (room.winner === 'different_guess') {
+    differentPlayer.score = (differentPlayer.score || 0) + 3;
+    return;
+  }
+
+  differentPlayer.score = (differentPlayer.score || 0) + 2;
+}
+
+function pushRoundHistory(room) {
+  const alreadyStored = room.roundHistory.some((round) => round.roundNumber === room.roundNumber);
+  if (alreadyStored) return;
+
+  room.roundHistory.push({
+    roundNumber: room.roundNumber,
+    differentPlayerName: room.players[room.differentPlayerId]?.name || 'Ayrılan oyuncu',
+    mainWord: room.mainWord,
+    differentWord: room.differentWord,
+    winner: room.winner,
+    reason: room.resultReason,
+    votes: translatedVotes(room),
+    scores: roomPlayers(room).sort((a, b) => b.score - a.score),
+    finishedAt: Date.now(),
+  });
+}
+
+function resolveVoting(room, reasonOverride = '') {
+  if (!room || room.phase === 'result') return;
   clearRoomTimer(room);
+
   const counts = voteCounts(room);
   const entries = Object.entries(counts);
   let topVotes = 0;
@@ -245,20 +381,92 @@ function resolveVoting(room) {
   const caughtDifferentPlayer = topTargets.length === 1 && topTargets[0] === room.differentPlayerId;
   room.phase = 'result';
   room.winner = caughtDifferentPlayer ? 'majority' : 'different';
+  room.resultReason = reasonOverride || (caughtDifferentPlayer ? 'vote_caught' : (topTargets.length > 1 ? 'vote_tie' : 'vote_missed'));
+  assignScores(room);
+  pushRoundHistory(room);
 }
 
-function moveToVoting(room) {
+function resolveDifferentGuess(room) {
+  if (!room || room.phase === 'result') return;
+  clearRoomTimer(room);
+  room.phase = 'result';
+  room.winner = 'different_guess';
+  room.resultReason = 'different_guessed_main_word';
+  assignScores(room);
+  pushRoundHistory(room);
+}
+
+function canPlayerDraw(room, playerId) {
+  if (!room || room.phase !== 'drawing' || !room.players[playerId]?.connected) return false;
+  return room.settings.drawMode === 'simultaneous' || room.currentTurnPlayerId === playerId;
+}
+
+function setTurnPlayer(room, index = 0) {
+  const players = activePlayers(room);
+  if (!players.length) {
+    room.currentTurnIndex = 0;
+    room.currentTurnPlayerId = '';
+    room.turnEndsAt = null;
+    room.turnDuration = 0;
+    return;
+  }
+
+  room.currentTurnIndex = ((index % players.length) + players.length) % players.length;
+  room.currentTurnPlayerId = players[room.currentTurnIndex].id;
+  room.turnDuration = room.settings.turnSeconds;
+  room.turnEndsAt = Date.now() + room.settings.turnSeconds * 1000;
+}
+
+function advanceTurn(room) {
+  if (!room || room.settings.drawMode !== 'turns' || room.phase !== 'drawing') return;
+  setTurnPlayer(room, (room.currentTurnIndex || 0) + 1);
+  emitRoomState(room);
+  emitRoomMessage(room, `Sıra ${room.players[room.currentTurnPlayerId]?.name || 'oyuncu'} oyuncusunda.`);
+}
+
+function moveToVoting(room, reason = 'Oylama başladı.') {
   if (!room || room.phase !== 'drawing') return;
   room.phase = 'voting';
   room.votes = {};
-  startRoomTimer(room, room.settings.votingSeconds, () => {
-    if (room.phase !== 'voting') return;
-    resolveVoting(room);
-    emitRoomState(room);
-    emitRoomMessage(room, 'Oylama süresi bitti. Sonuçlar açıldı.');
-  });
+  room.currentTurnPlayerId = '';
+  room.turnEndsAt = null;
+  room.turnDuration = 0;
+  room.phaseDuration = room.settings.votingSeconds;
+  room.phaseEndsAt = Date.now() + room.settings.votingSeconds * 1000;
   emitRoomState(room);
-  emitRoomMessage(room, 'Oylama başladı.');
+  emitRoomMessage(room, reason);
+}
+
+function startPhaseTimer(room, seconds, onEnd) {
+  clearRoomTimer(room);
+  room.phaseDuration = seconds;
+  room.phaseEndsAt = Date.now() + seconds * 1000;
+  if (room.phase === 'drawing' && room.settings.drawMode === 'turns') {
+    setTurnPlayer(room, 0);
+  }
+
+  emitTimer(room);
+  room.timerInterval = setInterval(() => {
+    if (!rooms[room.code]) return;
+
+    if (room.phase === 'drawing' && room.settings.drawMode === 'turns' && getTimerState(room).turn.timeLeft <= 0) {
+      advanceTurn(room);
+    }
+
+    emitTimer(room);
+    if (getTimerState(room).timeLeft <= 0) {
+      if (room.phase === 'drawing') {
+        moveToVoting(room, 'Çizim süresi bitti. Oylama başladı.');
+      } else {
+        clearRoomTimer(room);
+        onEnd();
+      }
+    }
+  }, 1000);
+}
+
+function getRoomByCode(code) {
+  return rooms[normalizeCode(code)];
 }
 
 function getRoomBySocket(socket) {
@@ -268,7 +476,7 @@ function getRoomBySocket(socket) {
 }
 
 function assertHost(socket, room) {
-  return room && room.hostId === socket.id;
+  return room && room.hostId === socket.data.playerId;
 }
 
 function normalizeDrawingOp(rawOp) {
@@ -290,11 +498,57 @@ function normalizeDrawingOp(rawOp) {
   };
 }
 
+function ensurePlayerId(payload, socket) {
+  return cleanText(payload.clientId, 80) || socket.id;
+}
+
+function attachSocketToPlayer(socket, room, playerId, name = '') {
+  socket.join(room.code);
+  socket.data.roomCode = room.code;
+  socket.data.playerId = playerId;
+
+  const player = room.players[playerId];
+  if (player) {
+    player.socketId = socket.id;
+    player.connected = true;
+    if (name) player.name = name;
+    return player;
+  }
+
+  room.players[playerId] = {
+    id: playerId,
+    socketId: socket.id,
+    name,
+    assignedWord: '',
+    score: 0,
+    ready: false,
+    connected: true,
+    joinedAt: Date.now(),
+  };
+  return room.players[playerId];
+}
+
+function scheduleEmptyRoomCleanup(room) {
+  if (activePlayers(room).length > 0 || room.emptyTimer) return;
+  room.emptyTimer = setTimeout(() => {
+    if (rooms[room.code] && activePlayers(room).length === 0) {
+      clearRoomTimer(room);
+      delete rooms[room.code];
+    }
+  }, EMPTY_ROOM_TTL_MS);
+}
+
+function cancelEmptyRoomCleanup(room) {
+  if (room?.emptyTimer) clearTimeout(room.emptyTimer);
+  if (room) room.emptyTimer = null;
+}
+
 io.on('connection', (socket) => {
   socket.emit('server-ready', { id: socket.id });
 
   socket.on('create-room', (payload = {}, ack = () => {}) => {
     const name = cleanText(payload.name, 24);
+    const playerId = ensurePlayerId(payload, socket);
     if (!name) {
       ack({ ok: false, error: 'Oyuncu adı gerekli.' });
       return;
@@ -303,85 +557,104 @@ io.on('connection', (socket) => {
     const code = createRoomCode();
     rooms[code] = {
       code,
-          hostId: socket.id,
-          phase: 'lobby',
-          players: {},
-          mainWord: '',
-          differentWord: '',
-          differentPlayerId: '',
-          votes: {},
-          winner: null,
-          drawingHistory: [],
-          settings: { ...DEFAULT_SETTINGS },
-          phaseEndsAt: null,
-          phaseDuration: 0,
-          timerInterval: null,
-          createdAt: Date.now(),
-        };
-
-    socket.join(code);
-    socket.data.roomCode = code;
-    rooms[code].players[socket.id] = {
-      id: socket.id,
-      name,
-      assignedWord: '',
-      joinedAt: Date.now(),
+      hostId: playerId,
+      phase: 'lobby',
+      roundNumber: 1,
+      players: {},
+      mainWord: '',
+      differentWord: '',
+      differentPlayerId: '',
+      votes: {},
+      guesses: {},
+      winner: null,
+      resultReason: '',
+      drawingHistory: [],
+      roundHistory: [],
+      settings: { ...DEFAULT_SETTINGS },
+      phaseEndsAt: null,
+      phaseDuration: 0,
+      timerInterval: null,
+      currentTurnIndex: 0,
+      currentTurnPlayerId: '',
+      turnEndsAt: null,
+      turnDuration: 0,
+      emptyTimer: null,
+      createdAt: Date.now(),
     };
 
-    ack({ ok: true, code, playerId: socket.id });
-    emitRoomState(rooms[code]);
-    socket.emit('drawing-history', rooms[code].drawingHistory);
+    const room = rooms[code];
+    attachSocketToPlayer(socket, room, playerId, name);
+    ack({ ok: true, code, playerId });
+    emitRoomState(room);
+    socket.emit('drawing-history', room.drawingHistory);
   });
 
   socket.on('join-room', (payload = {}, ack = () => {}) => {
     const code = normalizeCode(payload.code);
     const name = cleanText(payload.name, 24);
-    const room = rooms[code];
+    const playerId = ensurePlayerId(payload, socket);
+    const room = getRoomByCode(code);
 
     if (!code || !room) {
       ack({ ok: false, error: 'Bu kodla aktif oda bulunamadı.' });
       return;
     }
-
     if (!name) {
       ack({ ok: false, error: 'Oyuncu adı gerekli.' });
       return;
     }
 
-    if (room.phase !== 'lobby') {
+    const existingPlayer = room.players[playerId];
+    if (room.phase !== 'lobby' && !existingPlayer) {
       ack({ ok: false, error: 'Bu tur başladı. Yeni turda katılabilirsin.' });
       return;
     }
 
-    const duplicateName = Object.values(room.players).some((player) => player.name.toLowerCase() === name.toLowerCase());
+    const duplicateName = Object.values(room.players).some((player) => (
+      player.id !== playerId && player.connected && player.name.toLocaleLowerCase('tr-TR') === name.toLocaleLowerCase('tr-TR')
+    ));
     if (duplicateName) {
       ack({ ok: false, error: 'Bu isim odada zaten kullanılıyor.' });
       return;
     }
 
-    socket.join(code);
-    socket.data.roomCode = code;
-    room.players[socket.id] = {
-      id: socket.id,
-      name,
-      assignedWord: '',
-      joinedAt: Date.now(),
-    };
-
-    ack({ ok: true, code, playerId: socket.id });
-    emitRoomMessage(room, `${name} odaya katıldı.`);
+    cancelEmptyRoomCleanup(room);
+    attachSocketToPlayer(socket, room, playerId, name);
+    ack({ ok: true, code, playerId });
+    emitRoomMessage(room, existingPlayer ? `${name} geri döndü.` : `${name} odaya katıldı.`);
     emitRoomState(room);
     socket.emit('drawing-history', room.drawingHistory);
+  });
+
+  socket.on('resume-room', (payload = {}, ack = () => {}) => {
+    const room = getRoomByCode(payload.code);
+    const playerId = ensurePlayerId(payload, socket);
+    const player = room?.players[playerId];
+    if (!room || !player) {
+      ack({ ok: false });
+      return;
+    }
+
+    cancelEmptyRoomCleanup(room);
+    attachSocketToPlayer(socket, room, playerId, player.name);
+    ack({ ok: true, code: room.code, playerId });
+    emitRoomMessage(room, `${player.name} geri bağlandı.`);
+    emitRoomState(room);
+    socket.emit('drawing-history', room.drawingHistory);
+  });
+
+  socket.on('toggle-ready', () => {
+    const room = getRoomBySocket(socket);
+    const player = room?.players[socket.data.playerId];
+    if (!room || !player || room.phase !== 'lobby') return;
+    player.ready = !player.ready;
+    emitRoomState(room);
   });
 
   socket.on('update-settings', (payload = {}) => {
     const room = getRoomBySocket(socket);
     if (!assertHost(socket, room) || room.phase !== 'lobby') return;
-
-    room.settings = {
-      drawingSeconds: clampSeconds(payload.drawingSeconds, room.settings.drawingSeconds),
-      votingSeconds: clampSeconds(payload.votingSeconds, room.settings.votingSeconds),
-    };
+    room.settings = normalizeSettings(room.settings, payload);
     emitRoomState(room);
   });
 
@@ -389,31 +662,38 @@ io.on('connection', (socket) => {
     const room = getRoomBySocket(socket);
     if (!assertHost(socket, room) || room.phase !== 'lobby') return;
 
-    const players = Object.values(room.players);
+    const players = activePlayers(room);
     if (players.length < 2) {
       socket.emit('action-error', 'Oyunu başlatmak için en az 2 oyuncu gerekli.');
       return;
     }
+    if (!allNonHostsReady(room)) {
+      socket.emit('action-error', 'Başlamak için tüm oyuncular hazır olmalı.');
+      return;
+    }
 
-    const wordPair = pickWordPair();
+    const wordPair = pickWordPair(room);
     const differentPlayer = players[Math.floor(Math.random() * players.length)];
     room.differentPlayerId = differentPlayer.id;
     room.mainWord = wordPair.mainWord;
     room.differentWord = wordPair.differentWord;
     room.votes = {};
+    room.guesses = {};
     room.winner = null;
+    room.resultReason = '';
     room.phase = 'drawing';
     room.drawingHistory = [];
 
-    players.forEach((player) => {
+    Object.values(room.players).forEach((player) => {
       player.assignedWord = player.id === room.differentPlayerId ? room.differentWord : room.mainWord;
     });
 
     io.to(room.code).emit('canvas-cleared');
-    startRoomTimer(room, room.settings.drawingSeconds, () => {
-      if (room.phase !== 'drawing') return;
-      moveToVoting(room);
-      emitRoomMessage(room, 'Çizim süresi bitti.');
+    startPhaseTimer(room, room.settings.drawingSeconds, () => {
+      if (room.phase !== 'voting') return;
+      resolveVoting(room, 'voting_timeout');
+      emitRoomState(room);
+      emitRoomMessage(room, 'Oylama süresi bitti. Sonuçlar açıldı.');
     });
     emitRoomState(room);
     emitRoomMessage(room, 'Gizli kelimeler dağıtıldı. Çizim başladı.');
@@ -421,7 +701,8 @@ io.on('connection', (socket) => {
 
   socket.on('draw', (rawOp) => {
     const room = getRoomBySocket(socket);
-    if (!room || room.phase !== 'drawing' || !room.players[socket.id]) return;
+    const playerId = socket.data.playerId;
+    if (!room || !canPlayerDraw(room, playerId)) return;
 
     const op = normalizeDrawingOp(rawOp);
     room.drawingHistory.push(op);
@@ -446,27 +727,52 @@ io.on('connection', (socket) => {
 
   socket.on('submit-vote', (targetId) => {
     const room = getRoomBySocket(socket);
-    if (!room || room.phase !== 'voting' || !room.players[socket.id]) return;
+    const playerId = socket.data.playerId;
+    if (!room || room.phase !== 'voting' || !room.players[playerId]?.connected) return;
     if (!room.players[targetId]) {
       socket.emit('action-error', 'Geçerli bir oyuncu seçmelisin.');
       return;
     }
-    if (targetId === socket.id) {
+    if (targetId === playerId) {
       socket.emit('action-error', 'Kendine oy veremezsin.');
       return;
     }
-    if (room.votes[socket.id]) return;
+    if (room.votes[playerId]) return;
 
-    room.votes[socket.id] = targetId;
-    const allPlayersVoted = Object.keys(room.votes).length >= Object.keys(room.players).length;
+    room.votes[playerId] = targetId;
+    const eligibleVoters = connectedPlayerIds(room);
+    const allPlayersVoted = eligibleVoters.every((id) => room.votes[id]);
     if (allPlayersVoted) resolveVoting(room);
+    emitRoomState(room);
+  });
+
+  socket.on('submit-guess', (payload = {}) => {
+    const room = getRoomBySocket(socket);
+    const playerId = socket.data.playerId;
+    const player = room?.players[playerId];
+    if (!room || !player || !room.settings.oddGuessEnabled) return;
+    if (room.phase !== 'drawing' && room.phase !== 'voting') return;
+    if (room.guesses[playerId]) return;
+
+    const guess = cleanText(payload.guess, 32);
+    if (!guess) return;
+    room.guesses[playerId] = guess;
+
+    if (playerId === room.differentPlayerId && normalizeGuess(guess) === normalizeGuess(room.mainWord)) {
+      resolveDifferentGuess(room);
+      emitRoomState(room);
+      emitRoomMessage(room, `${player.name} ana kelimeyi tahmin etti.`);
+      return;
+    }
+
+    socket.emit('guess-result', { ok: true, correct: false });
     emitRoomState(room);
   });
 
   socket.on('reveal-results', () => {
     const room = getRoomBySocket(socket);
     if (!assertHost(socket, room) || room.phase !== 'voting') return;
-    resolveVoting(room);
+    resolveVoting(room, 'host_revealed');
     emitRoomState(room);
   });
 
@@ -474,6 +780,7 @@ io.on('connection', (socket) => {
     const room = getRoomBySocket(socket);
     if (!assertHost(socket, room) || room.phase !== 'result') return;
     resetRound(room);
+    room.roundNumber += 1;
     io.to(room.code).emit('canvas-cleared');
     emitRoomState(room);
     emitRoomMessage(room, 'Yeni tur için oda hazır.');
@@ -481,35 +788,26 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     const room = getRoomBySocket(socket);
-    if (!room) return;
+    const playerId = socket.data.playerId;
+    if (!room || !playerId || !room.players[playerId]) return;
 
-    const leavingPlayer = room.players[socket.id];
-    delete room.players[socket.id];
-    delete room.votes[socket.id];
-    Object.entries(room.votes).forEach(([voterId, targetId]) => {
-      if (targetId === socket.id) delete room.votes[voterId];
-    });
+    const leavingPlayer = room.players[playerId];
+    leavingPlayer.connected = false;
+    leavingPlayer.socketId = null;
 
-    const remainingIds = Object.keys(room.players);
-    if (remainingIds.length === 0) {
-      clearRoomTimer(room);
-      delete rooms[room.code];
+    const connectedIds = connectedPlayerIds(room);
+    if (!connectedIds.length) {
+      scheduleEmptyRoomCleanup(room);
       return;
     }
 
-    if (room.hostId === socket.id) {
-      room.hostId = remainingIds
-        .map((id) => room.players[id])
-        .sort((a, b) => a.joinedAt - b.joinedAt)[0].id;
+    if (room.hostId === playerId) {
+      room.hostId = connectedIds[0];
       emitRoomMessage(room, `${room.players[room.hostId].name} yeni host oldu.`);
     }
 
-    if ((room.phase === 'drawing' || room.phase === 'voting') && socket.id === room.differentPlayerId) {
-      resetRound(room);
-      io.to(room.code).emit('canvas-cleared');
-      emitRoomMessage(room, 'Farklı oyuncu ayrıldığı için tur bekleme odasına alındı.');
-    } else if (leavingPlayer) {
-      emitRoomMessage(room, `${leavingPlayer.name} odadan ayrıldı.`);
+    if (room.phase === 'drawing' && room.settings.drawMode === 'turns' && room.currentTurnPlayerId === playerId) {
+      advanceTurn(room);
     }
 
     emitRoomState(room);
