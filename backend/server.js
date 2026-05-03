@@ -182,7 +182,7 @@ function roomPlayers(room) {
 function playerCanUndo(room, playerId) {
   return room.phase === 'drawing'
     && room.currentTurnPlayerId === playerId
-    && room.drawingHistory.some((op) => op.playerId === playerId);
+    && room.drawingHistory.some((op) => op.playerId === playerId && op.strokeId);
 }
 
 function voteCounts(room) {
@@ -291,6 +291,17 @@ function emitRoomState(room) {
 
 function emitRoomMessage(room, message) {
   if (room) io.to(room.code).emit('room-message', message);
+}
+
+function transferHost(room, unavailablePlayerId) {
+  if (!room || room.hostId !== unavailablePlayerId) return false;
+  const nextHost = activePlayers(room).find((player) => player.id !== unavailablePlayerId);
+  if (!nextHost) return false;
+
+  room.hostId = nextHost.id;
+  emitRoomMessage(room, `${nextHost.name} yeni host oldu.`);
+  emitRoomState(room);
+  return true;
 }
 
 function emitTimer(room) {
@@ -797,14 +808,10 @@ io.on('connection', (socket) => {
     const playerId = socket.data.playerId;
     if (!room || !canPlayerDraw(room, playerId)) return;
 
-    const lastOwnOp = [...room.drawingHistory].reverse().find((op) => op.playerId === playerId && (op.turnId || op.strokeId));
+    const lastOwnOp = [...room.drawingHistory].reverse().find((op) => op.playerId === playerId && op.strokeId);
     if (!lastOwnOp) return;
 
-    if (lastOwnOp.turnId) {
-      room.drawingHistory = room.drawingHistory.filter((op) => !(op.playerId === playerId && op.turnId === lastOwnOp.turnId));
-    } else {
-      room.drawingHistory = room.drawingHistory.filter((op) => !(op.playerId === playerId && op.strokeId === lastOwnOp.strokeId));
-    }
+    room.drawingHistory = room.drawingHistory.filter((op) => !(op.playerId === playerId && op.strokeId === lastOwnOp.strokeId));
     io.to(room.code).emit('drawing-history', room.drawingHistory);
     emitRoomState(room);
   });
@@ -814,16 +821,6 @@ io.on('connection', (socket) => {
     const playerId = socket.data.playerId;
     if (!room || !canPlayerDraw(room, playerId)) return;
     advanceTurn(room);
-  });
-
-  socket.on('clear-canvas', () => {
-    const room = getRoomBySocket(socket);
-    const playerId = socket.data.playerId;
-    if (!room || !canPlayerDraw(room, playerId)) return;
-
-    room.drawingHistory = room.drawingHistory.filter((op) => !(op.playerId === playerId && op.turnId === room.currentTurnId));
-    io.to(room.code).emit('drawing-history', room.drawingHistory);
-    emitRoomState(room);
   });
 
   socket.on('submit-vote', (targetId) => {
@@ -887,6 +884,13 @@ io.on('connection', (socket) => {
     emitRoomMessage(room, 'Yeni tur için oda hazır.');
   });
 
+  socket.on('host-unavailable', () => {
+    const room = getRoomBySocket(socket);
+    const playerId = socket.data.playerId;
+    if (!room || !playerId) return;
+    transferHost(room, playerId);
+  });
+
   socket.on('disconnect', () => {
     const room = getRoomBySocket(socket);
     const playerId = socket.data.playerId;
@@ -902,10 +906,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (room.hostId === playerId) {
-      room.hostId = connectedIds[0];
-      emitRoomMessage(room, `${room.players[room.hostId].name} yeni host oldu.`);
-    }
+    transferHost(room, playerId);
 
     if (room.phase === 'drawing' && room.currentTurnPlayerId === playerId) {
       advanceTurn(room, false);
