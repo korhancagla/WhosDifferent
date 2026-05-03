@@ -13,6 +13,7 @@ const rooms = {};
 const CODE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 const MAX_DRAWING_OPS = 25000;
 const EMPTY_ROOM_TTL_MS = 15 * 60 * 1000;
+const TURNS_PER_PLAYER = 2;
 const PLAYER_COLORS = ['#0f766e', '#e11d48', '#2563eb', '#f59e0b', '#7c3aed', '#16a34a', '#db2777', '#0891b2'];
 
 const DEFAULT_SETTINGS = {
@@ -21,7 +22,6 @@ const DEFAULT_SETTINGS = {
   turnSeconds: 25,
   category: 'all',
   difficulty: 'all',
-  drawMode: 'turns',
   oddGuessEnabled: true,
 };
 
@@ -136,7 +136,6 @@ function clampSeconds(value, fallback, min = 15, max = 600) {
 function normalizeSettings(current, payload = {}) {
   const categoryValues = new Set(CATEGORIES.map((item) => item.value));
   const difficultyValues = new Set(DIFFICULTIES.map((item) => item.value));
-  const drawMode = payload.drawMode === 'simultaneous' || payload.drawMode === 'turns' ? payload.drawMode : current.drawMode;
 
   return {
     drawingSeconds: clampSeconds(payload.drawingSeconds, current.drawingSeconds),
@@ -144,7 +143,6 @@ function normalizeSettings(current, payload = {}) {
     turnSeconds: clampSeconds(payload.turnSeconds, current.turnSeconds, 10, 120),
     category: categoryValues.has(payload.category) ? payload.category : current.category,
     difficulty: difficultyValues.has(payload.difficulty) ? payload.difficulty : current.difficulty,
-    drawMode,
     oddGuessEnabled: payload.oddGuessEnabled !== false,
   };
 }
@@ -175,9 +173,16 @@ function roomPlayers(room) {
       ready: !!player.ready,
       connected: !!player.connected,
       score: Number(player.score) || 0,
+      turnsCompleted: room.turnCounts?.[player.id] || 0,
       hasVoted: !!room.votes[player.id],
       hasGuessed: !!room.guesses[player.id],
     }));
+}
+
+function playerCanUndo(room, playerId) {
+  return room.phase === 'drawing'
+    && room.currentTurnPlayerId === playerId
+    && room.drawingHistory.some((op) => op.playerId === playerId);
 }
 
 function voteCounts(room) {
@@ -235,6 +240,10 @@ function buildRoomState(room, viewerId) {
       currentPlayerId: room.currentTurnPlayerId || '',
       currentPlayerName: room.players[room.currentTurnPlayerId]?.name || '',
       currentPlayerColor: room.players[room.currentTurnPlayerId]?.color || '',
+      currentTurnId: room.currentTurnId || '',
+      currentTurnNumber: Math.min((room.turnCounts?.[room.currentTurnPlayerId] || 0) + 1, TURNS_PER_PLAYER),
+      turnsPerPlayer: TURNS_PER_PLAYER,
+      completedTurns: room.turnCounts || {},
     },
     canStart: allNonHostsReady(room),
     history: room.roundHistory.slice(-8),
@@ -251,6 +260,7 @@ function buildRoomState(room, viewerId) {
           hasGuessed: !!room.guesses[viewer.id],
           connected: !!viewer.connected,
           canDraw: canPlayerDraw(room, viewer.id),
+          canUndo: playerCanUndo(room, viewer.id),
         }
       : null,
     result: resultVisible
@@ -312,6 +322,8 @@ function resetRound(room) {
   room.differentWord = '';
   room.currentTurnIndex = 0;
   room.currentTurnPlayerId = '';
+  room.currentTurnId = '';
+  room.turnCounts = {};
   Object.values(room.players).forEach((player) => {
     player.assignedWord = '';
     player.ready = false;
@@ -402,27 +414,61 @@ function resolveDifferentGuess(room) {
 
 function canPlayerDraw(room, playerId) {
   if (!room || room.phase !== 'drawing' || !room.players[playerId]?.connected) return false;
-  return room.settings.drawMode === 'simultaneous' || room.currentTurnPlayerId === playerId;
+  return room.currentTurnPlayerId === playerId;
+}
+
+function resetTurnState(room) {
+  room.currentTurnIndex = 0;
+  room.currentTurnPlayerId = '';
+  room.currentTurnId = '';
+  room.turnEndsAt = null;
+  room.turnDuration = 0;
+  room.turnCounts = {};
+}
+
+function pendingTurnPlayers(room) {
+  return activePlayers(room).filter((player) => (room.turnCounts?.[player.id] || 0) < TURNS_PER_PLAYER);
 }
 
 function setTurnPlayer(room, index = 0) {
   const players = activePlayers(room);
-  if (!players.length) {
+  if (!players.length || !pendingTurnPlayers(room).length) {
     room.currentTurnIndex = 0;
     room.currentTurnPlayerId = '';
+    room.currentTurnId = '';
     room.turnEndsAt = null;
     room.turnDuration = 0;
     return;
   }
 
-  room.currentTurnIndex = ((index % players.length) + players.length) % players.length;
-  room.currentTurnPlayerId = players[room.currentTurnIndex].id;
+  const normalizedStart = ((index % players.length) + players.length) % players.length;
+  let nextIndex = normalizedStart;
+  for (let step = 0; step < players.length; step += 1) {
+    const candidateIndex = (normalizedStart + step) % players.length;
+    if ((room.turnCounts?.[players[candidateIndex].id] || 0) < TURNS_PER_PLAYER) {
+      nextIndex = candidateIndex;
+      break;
+    }
+  }
+
+  room.currentTurnIndex = nextIndex;
+  room.currentTurnPlayerId = players[nextIndex].id;
+  room.currentTurnId = `${room.currentTurnPlayerId}:${(room.turnCounts[room.currentTurnPlayerId] || 0) + 1}`;
   room.turnDuration = room.settings.turnSeconds;
   room.turnEndsAt = Date.now() + room.settings.turnSeconds * 1000;
 }
 
-function advanceTurn(room) {
-  if (!room || room.settings.drawMode !== 'turns' || room.phase !== 'drawing') return;
+function advanceTurn(room, countCurrent = true) {
+  if (!room || room.phase !== 'drawing') return;
+  if (countCurrent && room.currentTurnPlayerId) {
+    room.turnCounts[room.currentTurnPlayerId] = Math.min((room.turnCounts[room.currentTurnPlayerId] || 0) + 1, TURNS_PER_PLAYER);
+  }
+
+  if (!pendingTurnPlayers(room).length) {
+    moveToVoting(room, 'Herkes iki çizim hakkını kullandı. Oylama başladı.');
+    return;
+  }
+
   setTurnPlayer(room, (room.currentTurnIndex || 0) + 1);
   emitRoomState(room);
   emitRoomMessage(room, `Sıra ${room.players[room.currentTurnPlayerId]?.name || 'oyuncu'} oyuncusunda.`);
@@ -433,6 +479,7 @@ function moveToVoting(room, reason = 'Oylama başladı.') {
   room.phase = 'voting';
   room.votes = {};
   room.currentTurnPlayerId = '';
+  room.currentTurnId = '';
   room.turnEndsAt = null;
   room.turnDuration = 0;
   room.phaseDuration = room.settings.votingSeconds;
@@ -445,7 +492,7 @@ function startPhaseTimer(room, seconds, onEnd) {
   clearRoomTimer(room);
   room.phaseDuration = seconds;
   room.phaseEndsAt = Date.now() + seconds * 1000;
-  if (room.phase === 'drawing' && room.settings.drawMode === 'turns') {
+  if (room.phase === 'drawing') {
     setTurnPlayer(room, 0);
   }
 
@@ -453,7 +500,7 @@ function startPhaseTimer(room, seconds, onEnd) {
   room.timerInterval = setInterval(() => {
     if (!rooms[room.code]) return;
 
-    if (room.phase === 'drawing' && room.settings.drawMode === 'turns' && getTimerState(room).turn.timeLeft <= 0) {
+    if (room.phase === 'drawing' && getTimerState(room).turn.timeLeft <= 0) {
       advanceTurn(room);
     }
 
@@ -490,10 +537,11 @@ function nextPlayerColor(room) {
   return orderedColors.find((color) => !usedColors.has(color)) || PLAYER_COLORS[preferredIndex];
 }
 
-function normalizeDrawingOp(rawOp, player) {
+function normalizeDrawingOp(rawOp, player, room) {
   const mode = rawOp?.mode === 'eraser' ? 'eraser' : 'pen';
   const size = Math.min(Math.max(Number(rawOp?.size) || 4, 1), 64);
   const playerColor = /^#[0-9a-f]{6}$/i.test(player?.color || '') ? player.color : '#111827';
+  const strokeId = cleanText(rawOp?.strokeId, 80) || `${player?.id || 'player'}-${Date.now()}`;
 
   const point = (value) => ({
     x: Math.min(Math.max(Number(value?.x) || 0, 0), 1),
@@ -507,6 +555,8 @@ function normalizeDrawingOp(rawOp, player) {
     playerColor,
     playerId: player?.id || '',
     playerName: cleanText(player?.name || 'Oyuncu', 24),
+    strokeId,
+    turnId: room?.currentTurnId || '',
     size,
     mode,
   };
@@ -602,6 +652,8 @@ io.on('connection', (socket) => {
       timerInterval: null,
       currentTurnIndex: 0,
       currentTurnPlayerId: '',
+      currentTurnId: '',
+      turnCounts: {},
       turnEndsAt: null,
       turnDuration: 0,
       emptyTimer: null,
@@ -709,13 +761,15 @@ io.on('connection', (socket) => {
     room.resultReason = '';
     room.phase = 'drawing';
     room.drawingHistory = [];
+    resetTurnState(room);
 
     Object.values(room.players).forEach((player) => {
       player.assignedWord = player.id === room.differentPlayerId ? room.differentWord : room.mainWord;
     });
 
     io.to(room.code).emit('canvas-cleared');
-    startPhaseTimer(room, room.settings.drawingSeconds, () => {
+    const drawingDuration = Math.max(room.settings.drawingSeconds, players.length * TURNS_PER_PLAYER * room.settings.turnSeconds + 5);
+    startPhaseTimer(room, drawingDuration, () => {
       if (room.phase !== 'voting') return;
       resolveVoting(room, 'voting_timeout');
       emitRoomState(room);
@@ -730,7 +784,7 @@ io.on('connection', (socket) => {
     const playerId = socket.data.playerId;
     if (!room || !canPlayerDraw(room, playerId)) return;
 
-    const op = normalizeDrawingOp(rawOp, room.players[playerId]);
+    const op = normalizeDrawingOp(rawOp, room.players[playerId], room);
     room.drawingHistory.push(op);
     if (room.drawingHistory.length > MAX_DRAWING_OPS) {
       room.drawingHistory.splice(0, room.drawingHistory.length - MAX_DRAWING_OPS);
@@ -738,17 +792,38 @@ io.on('connection', (socket) => {
     socket.to(room.code).emit('draw-op', op);
   });
 
-  socket.on('clear-canvas', () => {
+  socket.on('undo-stroke', () => {
     const room = getRoomBySocket(socket);
-    if (!assertHost(socket, room)) return;
-    room.drawingHistory = [];
-    io.to(room.code).emit('canvas-cleared');
+    const playerId = socket.data.playerId;
+    if (!room || !canPlayerDraw(room, playerId)) return;
+
+    const lastOwnOp = [...room.drawingHistory].reverse().find((op) => op.playerId === playerId && (op.turnId || op.strokeId));
+    if (!lastOwnOp) return;
+
+    if (lastOwnOp.turnId) {
+      room.drawingHistory = room.drawingHistory.filter((op) => !(op.playerId === playerId && op.turnId === lastOwnOp.turnId));
+    } else {
+      room.drawingHistory = room.drawingHistory.filter((op) => !(op.playerId === playerId && op.strokeId === lastOwnOp.strokeId));
+    }
+    io.to(room.code).emit('drawing-history', room.drawingHistory);
+    emitRoomState(room);
   });
 
-  socket.on('go-to-voting', () => {
+  socket.on('finish-turn', () => {
     const room = getRoomBySocket(socket);
-    if (!assertHost(socket, room) || room.phase !== 'drawing') return;
-    moveToVoting(room);
+    const playerId = socket.data.playerId;
+    if (!room || !canPlayerDraw(room, playerId)) return;
+    advanceTurn(room);
+  });
+
+  socket.on('clear-canvas', () => {
+    const room = getRoomBySocket(socket);
+    const playerId = socket.data.playerId;
+    if (!room || !canPlayerDraw(room, playerId)) return;
+
+    room.drawingHistory = room.drawingHistory.filter((op) => !(op.playerId === playerId && op.turnId === room.currentTurnId));
+    io.to(room.code).emit('drawing-history', room.drawingHistory);
+    emitRoomState(room);
   });
 
   socket.on('submit-vote', (targetId) => {
@@ -832,8 +907,8 @@ io.on('connection', (socket) => {
       emitRoomMessage(room, `${room.players[room.hostId].name} yeni host oldu.`);
     }
 
-    if (room.phase === 'drawing' && room.settings.drawMode === 'turns' && room.currentTurnPlayerId === playerId) {
-      advanceTurn(room);
+    if (room.phase === 'drawing' && room.currentTurnPlayerId === playerId) {
+      advanceTurn(room, false);
     }
 
     emitRoomState(room);
