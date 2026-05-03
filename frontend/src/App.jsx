@@ -131,6 +131,7 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [viewport, setViewport] = useState({ scale: 1, offsetX: 0, offsetY: 0 });
   const [localCanUndo, setLocalCanUndo] = useState(false);
+  const [showRoundIntro, setShowRoundIntro] = useState(false);
 
   const canvasRef = useRef(null);
   const socketRef = useRef(null);
@@ -145,6 +146,7 @@ export default function App() {
   const hasMovedRef = useRef(false);
   const currentStrokeIdRef = useRef('');
   const toastTimerRef = useRef(null);
+  const roundIntroTimerRef = useRef(null);
   const previousPhaseRef = useRef('');
   const previousTimeLeftRef = useRef(null);
   const previousTurnIdRef = useRef('');
@@ -319,10 +321,16 @@ export default function App() {
       if (nextRoom.me?.name) localStorage.setItem(NAME_KEY, nextRoom.me.name);
 
       if (previousPhase && previousPhase !== nextRoom.phase) {
-        if (nextRoom.phase === 'drawing') play('start');
+        if (nextRoom.phase === 'drawing') {
+          play('start');
+          clearTimeout(roundIntroTimerRef.current);
+          setShowRoundIntro(true);
+          roundIntroTimerRef.current = setTimeout(() => setShowRoundIntro(false), 3200);
+        }
         if (nextRoom.phase === 'voting') play('vote');
         if (nextRoom.phase === 'result') play('result');
       }
+      if (nextRoom.phase !== 'drawing') setShowRoundIntro(false);
     });
 
     nextSocket.on('timer-tick', (nextTimer) => {
@@ -358,6 +366,7 @@ export default function App() {
 
     return () => {
       clearTimeout(toastTimerRef.current);
+      clearTimeout(roundIntroTimerRef.current);
       nextSocket.disconnect();
       socketRef.current = null;
     };
@@ -656,6 +665,8 @@ export default function App() {
                 localCanUndo={localCanUndo}
                 handleUndoStroke={handleUndoStroke}
                 handleFinishTurn={handleFinishTurn}
+                showRoundIntro={showRoundIntro}
+                closeRoundIntro={() => setShowRoundIntro(false)}
                 guess={guess}
                 setGuess={setGuess}
                 submitGuess={submitGuess}
@@ -759,7 +770,7 @@ function Metric({ label, value, className = '' }) {
 
 function Lobby({ room, isHost, settings, updateGameSetting, handleStartGame, emitSocket }) {
   return (
-    <main className="mx-auto grid max-w-7xl gap-4 px-4 py-4 lg:grid-cols-[300px_1fr]">
+    <main className="mx-auto grid max-w-7xl gap-4 px-4 pb-28 pt-4 lg:grid-cols-[300px_1fr]">
       <PlayerPanel room={room} />
       <Panel className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
@@ -767,7 +778,7 @@ function Lobby({ room, isHost, settings, updateGameSetting, handleStartGame, emi
             <h2 className="text-2xl font-black text-white">Oda Hazırlığı</h2>
             <p className="mt-1 text-sm text-slate-400">Tur {room.roundNumber}. Kelimeler otomatik ve gizli seçilir.</p>
           </div>
-          {isHost ? (
+          {isHost && (
             <button
               onClick={handleStartGame}
               disabled={!room.canStart}
@@ -775,16 +786,6 @@ function Lobby({ room, isHost, settings, updateGameSetting, handleStartGame, emi
             >
               <Play className="h-5 w-5" />
               Oyunu Başlat
-            </button>
-          ) : (
-            <button
-              onClick={() => emitSocket('toggle-ready')}
-              className={`inline-flex items-center gap-2 rounded-lg px-4 py-3 font-black transition ${
-                room.me?.ready ? 'bg-teal-400 text-slate-950 hover:bg-teal-300' : 'bg-slate-800 text-white hover:bg-slate-700'
-              }`}
-            >
-              <Check className="h-5 w-5" />
-              {room.me?.ready ? 'Hazırım' : 'Hazır Ol'}
             </button>
           )}
         </div>
@@ -826,6 +827,21 @@ function Lobby({ room, isHost, settings, updateGameSetting, handleStartGame, emi
           )}
         </div>
       </Panel>
+      {!isHost && (
+        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-700 bg-slate-950/94 px-4 py-4 shadow-2xl backdrop-blur">
+          <button
+            onClick={() => emitSocket('toggle-ready')}
+            className={`mx-auto flex w-full max-w-lg animate-pulse items-center justify-center gap-2 rounded-lg border-2 px-5 py-4 text-lg font-black shadow-2xl transition ${
+              room.me?.ready
+                ? 'border-teal-200 bg-teal-400 text-slate-950 shadow-teal-400/30'
+                : 'border-amber-200 bg-amber-400 text-slate-950 shadow-amber-400/30'
+            }`}
+          >
+            <Check className="h-6 w-6" />
+            {room.me?.ready ? 'Hazırsın' : 'Hazır Ol'}
+          </button>
+        </div>
+      )}
     </main>
   );
 }
@@ -901,6 +917,8 @@ function Game(props) {
     localCanUndo,
     handleUndoStroke,
     handleFinishTurn,
+    showRoundIntro,
+    closeRoundIntro,
     guess,
     setGuess,
     submitGuess,
@@ -911,33 +929,54 @@ function Game(props) {
   const turnColor = room.turn?.currentPlayerColor || '#64748b';
 
   return (
-    <main className="mx-auto grid max-w-7xl gap-4 px-4 py-4 xl:grid-cols-[270px_1fr_330px]">
-      <PlayerPanel room={room} />
+    <main className="relative min-h-[calc(100vh-68px)] px-3 pb-56 pt-24 sm:px-4">
+      {showRoundIntro && phase === 'drawing' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/88 px-4 backdrop-blur-md">
+          <div className="w-full max-w-2xl rounded-lg border border-teal-300/40 bg-slate-900 p-6 text-center shadow-2xl shadow-teal-950/50">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-lg bg-teal-400 text-slate-950">
+              <Pencil className="h-7 w-7" />
+            </div>
+            <div className="text-sm font-black uppercase tracking-widest text-teal-200">Tur başladı</div>
+            <div className="mt-3 text-4xl font-black text-amber-200">{room.me?.word || 'Kelime geliyor'}</div>
+            <div className="mt-4 text-base font-semibold leading-7 text-slate-300">
+              Sıra sana geldiğinde çiz. Her oyuncunun iki çizim hakkı var; `Geç` ile hakkını erken bitirebilirsin.
+            </div>
+            <button
+              onClick={closeRoundIntro}
+              className="mt-6 rounded-lg bg-teal-400 px-5 py-3 font-black text-slate-950 transition hover:bg-teal-300"
+            >
+              Çizime geç
+            </button>
+          </div>
+        </div>
+      )}
 
-      <Panel className="overflow-hidden">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 p-4">
-          <div>
-            <div className="text-xs font-black uppercase tracking-widest text-slate-500">Senin kelimen</div>
-            <div className="mt-1 text-2xl font-black text-amber-200">{room.me?.word || 'Bekleniyor'}</div>
+      <div className="fixed inset-x-0 top-[66px] z-30 border-b border-slate-800 bg-slate-950/94 px-3 py-3 shadow-2xl backdrop-blur sm:px-4">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-xs font-black uppercase tracking-widest text-slate-500">Kelime</div>
+            <div className="truncate text-xl font-black text-amber-200 sm:text-2xl">{room.me?.word || 'Bekleniyor'}</div>
           </div>
           {(phase === 'drawing' || phase === 'voting') && (
-            <div className="rounded-lg border border-amber-400/40 bg-amber-950 px-4 py-2 text-right">
-              <div className="text-xs font-black uppercase tracking-widest text-amber-300/70">Kalan süre</div>
-              <div className="font-mono text-3xl font-black text-amber-100">{formatTime(timer.timeLeft)}</div>
+            <div className="shrink-0 rounded-lg border border-amber-400/40 bg-amber-950 px-3 py-2 text-right">
+              <div className="text-xs font-black uppercase tracking-widest text-amber-300/70">Süre</div>
+              <div className="font-mono text-2xl font-black text-amber-100">{formatTime(timer.timeLeft)}</div>
             </div>
           )}
           {phase === 'drawing' && (
-            <div className="rounded-lg border border-teal-400/40 bg-teal-950 px-4 py-2 text-right">
-              <div className="text-xs font-black uppercase tracking-widest text-teal-300/70">Çizim hakkı</div>
+            <div className="hidden shrink-0 rounded-lg border border-teal-400/40 bg-teal-950 px-3 py-2 text-right sm:block">
+              <div className="text-xs font-black uppercase tracking-widest text-teal-300/70">Hak</div>
               <div className="font-black text-teal-100">{room.turn?.currentTurnNumber || 1}/{room.turn?.turnsPerPlayer || 2}</div>
             </div>
           )}
         </div>
+      </div>
 
+      <Panel className="mx-auto max-w-7xl overflow-hidden">
         <div className="relative bg-stone-50">
           <canvas
             ref={canvasRef}
-            className={`block h-[min(64vh,680px)] min-h-[360px] w-full touch-none ${canDraw ? 'cursor-crosshair' : 'cursor-default'}`}
+            className={`block h-[calc(100vh-270px)] min-h-[460px] w-full touch-none ${canDraw ? 'cursor-crosshair' : 'cursor-default'}`}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={stopDrawing}
@@ -958,7 +997,7 @@ function Game(props) {
             </div>
           )}
           {phase === 'drawing' && (
-            <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-lg border border-slate-300 bg-white/92 px-3 py-2 text-sm font-black text-slate-800 shadow">
+            <div className="absolute bottom-4 left-4 flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-lg border border-slate-300 bg-white/92 px-3 py-2 text-sm font-black text-slate-800 shadow">
               <span className="h-3 w-3 rounded-full" style={{ backgroundColor: turnColor }} />
               <span className="text-slate-500">Sıra:</span> {turnName || '-'}
               <span className="rounded bg-teal-100 px-1.5 py-0.5 text-xs text-teal-700">{room.turn?.currentTurnNumber || 1}/{room.turn?.turnsPerPlayer || 2}</span>
@@ -991,58 +1030,59 @@ function Game(props) {
         </div>
       </Panel>
 
-      <Panel className="p-4">
-        {phase === 'drawing' && (
-          <DrawingTools
+      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 px-3 py-3 shadow-2xl backdrop-blur sm:px-4">
+        <div className="mx-auto max-h-[42vh] max-w-7xl overflow-y-auto">
+          {phase === 'drawing' && (
+            <DrawingTools
             tool={tool}
             setTool={setTool}
             size={size}
             setSize={setSize}
-            isHost={isHost}
             emitSocket={emitSocket}
-            localCanUndo={localCanUndo}
-            handleUndoStroke={handleUndoStroke}
-            handleFinishTurn={handleFinishTurn}
-            room={room}
-          />
-        )}
-        {phase === 'voting' && <VotingPanel room={room} isHost={isHost} emitSocket={emitSocket} voteTargetName={voteTargetName} />}
-        {phase === 'result' && <ResultPanel room={room} isHost={isHost} onNewRound={() => emitSocket('new-round')} />}
-        {(phase === 'drawing' || phase === 'voting') && room.settings.oddGuessEnabled && (
-          <form onSubmit={submitGuess} className="mt-5 rounded-lg border border-violet-500/40 bg-violet-950/35 p-3">
-            <div className="mb-2 flex items-center gap-2 text-sm font-black uppercase tracking-widest text-violet-200">
-              <Target className="h-4 w-4" />
-              Ana kelime tahmini
-            </div>
-            <div className="flex gap-2">
-              <input
-                value={guess}
-                onChange={(event) => setGuess(event.target.value)}
-                disabled={room.me?.hasGuessed}
-                className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-violet-300 disabled:opacity-60"
-                placeholder={room.me?.hasGuessed ? 'Tahmin gönderildi' : 'Tahmin yaz'}
-              />
-              <button
-                disabled={room.me?.hasGuessed || !guess.trim()}
-                className="rounded-lg bg-violet-400 px-3 py-2 font-black text-slate-950 disabled:opacity-50"
-              >
-                <Send className="h-4 w-4" />
-              </button>
-            </div>
-          </form>
-        )}
-      </Panel>
+              localCanUndo={localCanUndo}
+              handleUndoStroke={handleUndoStroke}
+              handleFinishTurn={handleFinishTurn}
+              room={room}
+            />
+          )}
+          {phase === 'voting' && <VotingPanel room={room} isHost={isHost} emitSocket={emitSocket} voteTargetName={voteTargetName} />}
+          {phase === 'result' && <ResultPanel room={room} isHost={isHost} onNewRound={() => emitSocket('new-round')} />}
+          {(phase === 'drawing' || phase === 'voting') && room.settings.oddGuessEnabled && (
+            <form onSubmit={submitGuess} className="mt-3 rounded-lg border border-violet-500/40 bg-violet-950/35 p-3">
+              <div className="mb-2 flex items-center gap-2 text-sm font-black uppercase tracking-widest text-violet-200">
+                <Target className="h-4 w-4" />
+                Ana kelime tahmini
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={guess}
+                  onChange={(event) => setGuess(event.target.value)}
+                  disabled={room.me?.hasGuessed}
+                  className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-violet-300 disabled:opacity-60"
+                  placeholder={room.me?.hasGuessed ? 'Tahmin gönderildi' : 'Tahmin yaz'}
+                />
+                <button
+                  disabled={room.me?.hasGuessed || !guess.trim()}
+                  className="rounded-lg bg-violet-400 px-3 py-2 font-black text-slate-950 disabled:opacity-50"
+                >
+                  <Send className="h-4 w-4" />
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      </div>
     </main>
   );
 }
 
-function DrawingTools({ tool, setTool, size, setSize, isHost, emitSocket, localCanUndo, handleUndoStroke, handleFinishTurn, room }) {
+function DrawingTools({ tool, setTool, size, setSize, emitSocket, localCanUndo, handleUndoStroke, handleFinishTurn, room }) {
   const myColor = room.me?.color || '#111827';
   const turnColor = room.turn?.currentPlayerColor || '#64748b';
   const isMyTurn = !!room.me?.canDraw;
 
   return (
-    <div className="space-y-5">
+    <div className="grid gap-3 lg:grid-cols-[220px_1fr_280px_220px] lg:items-center">
       <div>
         <div className="mb-2 text-sm font-black uppercase tracking-widest text-slate-500">Araçlar</div>
         <div className="grid grid-cols-2 gap-2">
@@ -1051,7 +1091,7 @@ function DrawingTools({ tool, setTool, size, setSize, isHost, emitSocket, localC
         </div>
       </div>
 
-      <div className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-3">
+      <div className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3">
         <div className="mb-2 text-sm font-black uppercase tracking-widest text-slate-500">Oyuncu rengin</div>
         <div className="flex items-center gap-3">
           <span className="h-10 w-10 shrink-0 rounded-full border-2 border-white/70 shadow-lg shadow-black/30" style={{ backgroundColor: myColor }} />
@@ -1062,7 +1102,7 @@ function DrawingTools({ tool, setTool, size, setSize, isHost, emitSocket, localC
         </div>
       </div>
 
-      <label className="block">
+      <label className="block rounded-lg border border-slate-700 bg-slate-900 px-3 py-3">
         <span className="mb-2 block text-sm font-black uppercase tracking-widest text-slate-500">Kalınlık</span>
         <input
           type="range"
@@ -1075,36 +1115,6 @@ function DrawingTools({ tool, setTool, size, setSize, isHost, emitSocket, localC
         <div className="mt-2 text-sm font-bold text-slate-300">{size}px</div>
       </label>
 
-      {isMyTurn && (
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            onClick={handleUndoStroke}
-            disabled={!room.me?.canUndo && !localCanUndo}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-3 font-bold text-slate-100 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            <RotateCcw className="h-5 w-5" />
-            Geri al
-          </button>
-          <button
-            onClick={handleFinishTurn}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-amber-400 px-3 py-3 font-black text-slate-950 transition hover:bg-amber-300"
-          >
-            <Send className="h-5 w-5" />
-            Geç
-          </button>
-        </div>
-      )}
-
-      {isHost && (
-        <button
-          onClick={() => emitSocket('clear-canvas')}
-          className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-rose-700 bg-rose-950 px-4 py-3 font-bold text-rose-100 transition hover:bg-rose-900"
-        >
-          <Trash2 className="h-5 w-5" />
-          Canvas Temizle
-        </button>
-      )}
-
       <div className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-sm text-slate-300">
         <div className="mb-1 text-xs font-black uppercase tracking-widest text-slate-500">Şu an çizen</div>
         <div className="flex items-center gap-2">
@@ -1114,6 +1124,37 @@ function DrawingTools({ tool, setTool, size, setSize, isHost, emitSocket, localC
             {room.turn?.currentTurnNumber || 1}/{room.turn?.turnsPerPlayer || 2}
           </span>
         </div>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 lg:col-span-4">
+        {isMyTurn && (
+          <>
+            <button
+              onClick={handleUndoStroke}
+              disabled={!room.me?.canUndo && !localCanUndo}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-3 font-bold text-slate-100 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              <RotateCcw className="h-5 w-5" />
+              Geri al
+            </button>
+            <button
+              onClick={handleFinishTurn}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-amber-400 px-3 py-3 font-black text-slate-950 transition hover:bg-amber-300"
+            >
+              <Send className="h-5 w-5" />
+              Geç
+            </button>
+          </>
+        )}
+        {isMyTurn && (
+          <button
+            onClick={() => emitSocket('clear-canvas')}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-rose-700 bg-rose-950 px-4 py-3 font-bold text-rose-100 transition hover:bg-rose-900 sm:col-span-2 lg:col-span-1"
+          >
+            <Trash2 className="h-5 w-5" />
+            Bu hakkı temizle
+          </button>
+        )}
       </div>
     </div>
   );
