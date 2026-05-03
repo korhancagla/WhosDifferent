@@ -52,6 +52,21 @@ function formatTime(totalSeconds = 0) {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function distanceBetween(first, second) {
+  return Math.hypot(first.x - second.x, first.y - second.y);
+}
+
+function midpointBetween(first, second) {
+  return {
+    x: (first.x + second.x) / 2,
+    y: (first.y + second.y) / 2,
+  };
+}
+
 function playerInitial(name = '?') {
   return name.trim().slice(0, 1).toLocaleUpperCase('tr-TR') || '?';
 }
@@ -114,17 +129,25 @@ export default function App() {
   const [size, setSize] = useState(5);
   const [guess, setGuess] = useState('');
   const [showHistory, setShowHistory] = useState(false);
+  const [viewport, setViewport] = useState({ scale: 1, offsetX: 0, offsetY: 0 });
+  const [localCanUndo, setLocalCanUndo] = useState(false);
 
   const canvasRef = useRef(null);
   const socketRef = useRef(null);
   const clientIdRef = useRef(getClientId());
+  const roomRef = useRef(null);
   const drawingHistoryRef = useRef([]);
+  const viewportRef = useRef(viewport);
+  const activePointersRef = useRef(new Map());
+  const pinchRef = useRef(null);
   const isDrawingRef = useRef(false);
   const lastPointRef = useRef(null);
   const hasMovedRef = useRef(false);
+  const currentStrokeIdRef = useRef('');
   const toastTimerRef = useRef(null);
   const previousPhaseRef = useRef('');
   const previousTimeLeftRef = useRef(null);
+  const previousTurnIdRef = useRef('');
   const { muted, setMuted, play } = useSound();
 
   const phase = room?.phase || 'lobby';
@@ -134,6 +157,10 @@ export default function App() {
   const timer = room?.timer || { timeLeft: 0, total: 0, turn: { timeLeft: 0, total: 0 } };
   const canDraw = !!room?.me?.canDraw;
   const resultIntensity = phase === 'result' ? 'burst' : 'calm';
+
+  useEffect(() => {
+    roomRef.current = room;
+  }, [room]);
 
   const showToast = useCallback((message) => {
     clearTimeout(toastTimerRef.current);
@@ -165,28 +192,64 @@ export default function App() {
     ctx.restore();
   }, []);
 
+  const normalizeViewport = useCallback((nextViewport) => {
+    const canvas = canvasRef.current;
+    const rect = canvas?.getBoundingClientRect();
+    const scale = clamp(nextViewport.scale, 1, 4);
+    if (!rect?.width || !rect?.height || scale === 1) {
+      return { scale, offsetX: 0, offsetY: 0 };
+    }
+
+    const minX = rect.width - rect.width * scale;
+    const minY = rect.height - rect.height * scale;
+    return {
+      scale,
+      offsetX: clamp(nextViewport.offsetX, minX, 0),
+      offsetY: clamp(nextViewport.offsetY, minY, 0),
+    };
+  }, []);
+
+  const applyViewportZoom = useCallback((nextScale, center = null) => {
+    const canvas = canvasRef.current;
+    const rect = canvas?.getBoundingClientRect();
+    if (!rect?.width || !rect?.height) return;
+
+    setViewport((previous) => {
+      const scale = clamp(nextScale, 1, 4);
+      const focal = center || { x: rect.width / 2, y: rect.height / 2 };
+      const worldX = (focal.x - previous.offsetX) / previous.scale;
+      const worldY = (focal.y - previous.offsetY) / previous.scale;
+      return normalizeViewport({
+        scale,
+        offsetX: focal.x - worldX * scale,
+        offsetY: focal.y - worldY * scale,
+      });
+    });
+  }, [normalizeViewport]);
+
   const drawOperation = useCallback((op) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const rect = canvas.getBoundingClientRect();
-    const fromX = op.from.x * rect.width;
-    const fromY = op.from.y * rect.height;
-    const toX = op.to.x * rect.width;
-    const toY = op.to.y * rect.height;
+    const { scale, offsetX, offsetY } = viewportRef.current;
+    const fromX = op.from.x * rect.width * scale + offsetX;
+    const fromY = op.from.y * rect.height * scale + offsetY;
+    const toX = op.to.x * rect.width * scale + offsetX;
+    const toY = op.to.y * rect.height * scale + offsetY;
     const strokeColor = op.playerColor || op.color || '#111827';
 
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.lineWidth = op.size;
+    ctx.lineWidth = op.size * scale;
     ctx.globalCompositeOperation = op.mode === 'eraser' ? 'destination-out' : 'source-over';
     ctx.strokeStyle = strokeColor;
     ctx.fillStyle = strokeColor;
 
     if (Math.abs(fromX - toX) < 0.2 && Math.abs(fromY - toY) < 0.2) {
       ctx.beginPath();
-      ctx.arc(toX, toY, op.size / 2, 0, Math.PI * 2);
+      ctx.arc(toX, toY, (op.size * scale) / 2, 0, Math.PI * 2);
       ctx.fill();
     } else {
       ctx.beginPath();
@@ -212,6 +275,11 @@ export default function App() {
     clearCanvasSurface();
     drawingHistoryRef.current.forEach(drawOperation);
   }, [clearCanvasSurface, drawOperation]);
+
+  useEffect(() => {
+    viewportRef.current = viewport;
+    requestAnimationFrame(replayCanvas);
+  }, [viewport, replayCanvas]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -240,7 +308,10 @@ export default function App() {
 
     nextSocket.on('room-state', (nextRoom) => {
       const previousPhase = previousPhaseRef.current;
+      const previousTurnId = previousTurnIdRef.current;
       previousPhaseRef.current = nextRoom.phase;
+      previousTurnIdRef.current = nextRoom.turn?.currentTurnId || '';
+      if (previousTurnId && previousTurnId !== previousTurnIdRef.current) setLocalCanUndo(false);
       setRoom(nextRoom);
       setError('');
       setGuess('');
@@ -264,6 +335,10 @@ export default function App() {
 
     nextSocket.on('drawing-history', (ops) => {
       drawingHistoryRef.current = Array.isArray(ops) ? ops : [];
+      const currentRoom = roomRef.current;
+      setLocalCanUndo(drawingHistoryRef.current.some((op) => (
+        op.playerId === clientIdRef.current && op.turnId === currentRoom?.turn?.currentTurnId
+      )));
       requestAnimationFrame(replayCanvas);
     });
 
@@ -332,19 +407,27 @@ export default function App() {
   };
 
   const handleStartGame = () => emitSocket('start-game');
+  const handleUndoStroke = () => {
+    setLocalCanUndo(false);
+    emitSocket('undo-stroke');
+  };
+  const handleFinishTurn = () => emitSocket('finish-turn');
+  const resetZoom = () => setViewport({ scale: 1, offsetX: 0, offsetY: 0 });
 
   const getCanvasPoint = (event) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
+    const { scale, offsetX, offsetY } = viewportRef.current;
     return {
-      x: Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1),
-      y: Math.min(Math.max((event.clientY - rect.top) / rect.height, 0), 1),
+      x: clamp(((event.clientX - rect.left - offsetX) / scale) / rect.width, 0, 1),
+      y: clamp(((event.clientY - rect.top - offsetY) / scale) / rect.height, 0, 1),
     };
   };
 
   const emitDraw = (op) => {
     drawingHistoryRef.current.push(op);
     drawOperation(op);
+    setLocalCanUndo(true);
     emitSocket('draw', op);
   };
 
@@ -355,20 +438,64 @@ export default function App() {
     playerColor: room?.me?.color || '#111827',
     playerId: room?.me?.id || '',
     playerName: room?.me?.name || '',
+    strokeId: currentStrokeIdRef.current,
+    turnId: room?.turn?.currentTurnId || '',
     size: Number(size),
     mode: tool,
   });
 
   const handlePointerDown = (event) => {
-    if (!canDraw) return;
     event.preventDefault();
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    activePointersRef.current.set(event.pointerId, pointer);
     event.currentTarget.setPointerCapture(event.pointerId);
+
+    if (activePointersRef.current.size >= 2) {
+      isDrawingRef.current = false;
+      lastPointRef.current = null;
+      const pointers = [...activePointersRef.current.values()];
+      pinchRef.current = {
+        distance: distanceBetween(pointers[0], pointers[1]),
+        midpoint: midpointBetween(pointers[0], pointers[1]),
+        viewport: viewportRef.current,
+      };
+      return;
+    }
+
+    if (!canDraw) return;
+    currentStrokeIdRef.current = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     isDrawingRef.current = true;
     hasMovedRef.current = false;
     lastPointRef.current = getCanvasPoint(event);
   };
 
   const handlePointerMove = (event) => {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    if (activePointersRef.current.has(event.pointerId)) {
+      activePointersRef.current.set(event.pointerId, { x: event.clientX - rect.left, y: event.clientY - rect.top });
+    }
+
+    if (activePointersRef.current.size >= 2 && pinchRef.current) {
+      event.preventDefault();
+      const pointers = [...activePointersRef.current.values()];
+      const nextDistance = distanceBetween(pointers[0], pointers[1]);
+      const nextMidpoint = midpointBetween(pointers[0], pointers[1]);
+      const start = pinchRef.current;
+      const nextScale = start.viewport.scale * (nextDistance / Math.max(start.distance, 1));
+      const worldX = (start.midpoint.x - start.viewport.offsetX) / start.viewport.scale;
+      const worldY = (start.midpoint.y - start.viewport.offsetY) / start.viewport.scale;
+
+      setViewport(normalizeViewport({
+        scale: nextScale,
+        offsetX: nextMidpoint.x - worldX * nextScale,
+        offsetY: nextMidpoint.y - worldY * nextScale,
+      }));
+      return;
+    }
+
     if (!isDrawingRef.current || !canDraw) return;
     event.preventDefault();
     const nextPoint = getCanvasPoint(event);
@@ -383,14 +510,26 @@ export default function App() {
   };
 
   const stopDrawing = (event) => {
-    if (!isDrawingRef.current) return;
     event.preventDefault();
+    activePointersRef.current.delete(event.pointerId);
+    if (activePointersRef.current.size < 2) pinchRef.current = null;
+
+    if (!isDrawingRef.current) {
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        /* Pointer capture may already be released by the browser. */
+      }
+      return;
+    }
+
     const point = getCanvasPoint(event);
     if (!hasMovedRef.current) {
       emitDraw(localDrawPayload(point, point));
     }
     isDrawingRef.current = false;
     lastPointRef.current = null;
+    currentStrokeIdRef.current = '';
     try {
       event.currentTarget.releasePointerCapture(event.pointerId);
     } catch {
@@ -510,7 +649,13 @@ export default function App() {
                 handlePointerDown={handlePointerDown}
                 handlePointerMove={handlePointerMove}
                 stopDrawing={stopDrawing}
+                viewport={viewport}
+                applyViewportZoom={applyViewportZoom}
+                resetZoom={resetZoom}
                 emitSocket={emitSocket}
+                localCanUndo={localCanUndo}
+                handleUndoStroke={handleUndoStroke}
+                handleFinishTurn={handleFinishTurn}
                 guess={guess}
                 setGuess={setGuess}
                 submitGuess={submitGuess}
@@ -655,26 +800,19 @@ function Lobby({ room, isHost, settings, updateGameSetting, handleStartGame, emi
               Skor, tur geçmişi, sıralı çizim ve farklı oyuncunun ana kelimeyi tahmin etme hakkı aktif.
             </p>
 
-            <div className="mt-5 grid gap-3 md:grid-cols-3">
+            <div className="mt-5 grid gap-3 md:grid-cols-2">
               <InfoTile label="Kategori" value={room.options.categories.find((item) => item.value === settings.category)?.label || 'Karışık'} />
               <InfoTile label="Zorluk" value={room.options.difficulties.find((item) => item.value === settings.difficulty)?.label || 'Karışık'} />
-              <InfoTile label="Mod" value={settings.drawMode === 'turns' ? 'Sırayla' : 'Herkes'} />
             </div>
           </div>
 
           {isHost && (
             <div className="space-y-4 rounded-lg border border-slate-700 bg-slate-950 p-4">
-              <SettingsSelect label="Kategori" value={settings.category} options={room.options.categories} onChange={(value) => updateGameSetting('category', value)} />
-              <SettingsSelect label="Zorluk" value={settings.difficulty} options={room.options.difficulties} onChange={(value) => updateGameSetting('difficulty', value)} />
-              <SettingsSelect
-                label="Çizim modu"
-                value={settings.drawMode}
-                options={[{ value: 'simultaneous', label: 'Herkes aynı anda' }, { value: 'turns', label: 'Sırayla çizim' }]}
-                onChange={(value) => updateGameSetting('drawMode', value)}
-              />
+              <SegmentedSetting label="Kategori" value={settings.category} options={room.options.categories} onChange={(value) => updateGameSetting('category', value)} />
+              <SegmentedSetting label="Zorluk" value={settings.difficulty} options={room.options.difficulties} onChange={(value) => updateGameSetting('difficulty', value)} />
               <NumberSetting label="Çizim süresi" value={settings.drawingSeconds} onChange={(value) => updateGameSetting('drawingSeconds', value)} />
               <NumberSetting label="Oylama süresi" value={settings.votingSeconds} onChange={(value) => updateGameSetting('votingSeconds', value)} />
-              {settings.drawMode === 'turns' && <NumberSetting label="Oyuncu sıra süresi" value={settings.turnSeconds} onChange={(value) => updateGameSetting('turnSeconds', value)} min="10" max="120" />}
+              <NumberSetting label="Oyuncu sıra süresi" value={settings.turnSeconds} onChange={(value) => updateGameSetting('turnSeconds', value)} min="10" max="120" />
               <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-900 px-3 py-3">
                 <span className="text-sm font-bold text-slate-200">Farklı kişi tahmin hakkı</span>
                 <input
@@ -701,18 +839,26 @@ function InfoTile({ label, value }) {
   );
 }
 
-function SettingsSelect({ label, value, options, onChange }) {
+function SegmentedSetting({ label, value, options, onChange }) {
   return (
-    <label className="block">
-      <span className="mb-2 block text-sm font-semibold text-slate-300">{label}</span>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-teal-400"
-      >
-        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-      </select>
-    </label>
+    <div>
+      <div className="mb-2 text-sm font-semibold text-slate-300">{label}</div>
+      <div className="grid grid-cols-2 gap-2">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            onClick={() => onChange(option.value)}
+            className={`rounded-lg border px-3 py-2 text-left text-sm font-black transition ${
+              value === option.value
+                ? 'border-teal-300 bg-teal-400 text-slate-950'
+                : 'border-slate-700 bg-slate-900 text-slate-200 hover:border-teal-500 hover:bg-slate-800'
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -748,7 +894,13 @@ function Game(props) {
     handlePointerDown,
     handlePointerMove,
     stopDrawing,
+    viewport,
+    applyViewportZoom,
+    resetZoom,
     emitSocket,
+    localCanUndo,
+    handleUndoStroke,
+    handleFinishTurn,
     guess,
     setGuess,
     submitGuess,
@@ -774,14 +926,11 @@ function Game(props) {
               <div className="font-mono text-3xl font-black text-amber-100">{formatTime(timer.timeLeft)}</div>
             </div>
           )}
-          {isHost && phase === 'drawing' && (
-            <button
-              onClick={() => emitSocket('go-to-voting')}
-              className="inline-flex items-center gap-2 rounded-lg bg-amber-400 px-4 py-3 font-black text-slate-950 transition hover:bg-amber-300"
-            >
-              <Vote className="h-5 w-5" />
-              Oylamaya Geç
-            </button>
+          {phase === 'drawing' && (
+            <div className="rounded-lg border border-teal-400/40 bg-teal-950 px-4 py-2 text-right">
+              <div className="text-xs font-black uppercase tracking-widest text-teal-300/70">Çizim hakkı</div>
+              <div className="font-black text-teal-100">{room.turn?.currentTurnNumber || 1}/{room.turn?.turnsPerPlayer || 2}</div>
+            </div>
           )}
         </div>
 
@@ -793,18 +942,14 @@ function Game(props) {
             onPointerMove={handlePointerMove}
             onPointerUp={stopDrawing}
             onPointerCancel={stopDrawing}
-            onPointerLeave={(event) => {
-              if (canDraw) stopDrawing(event);
-            }}
+            onPointerLeave={stopDrawing}
           />
           {!canDraw && phase === 'drawing' && (
             <div className="pointer-events-none absolute inset-x-4 top-4 rounded-lg border border-slate-300 bg-white/92 px-3 py-2 text-center text-sm font-bold text-slate-700 shadow">
-              {room.settings.drawMode === 'turns' ? (
-                <span className="inline-flex items-center justify-center gap-2">
-                  <span className="h-3 w-3 rounded-full" style={{ backgroundColor: turnColor }} />
-                  Sıra {turnName || 'oyuncu'} oyuncusunda.
-                </span>
-              ) : 'Canvas tur başlayınca açılır.'}
+              <span className="inline-flex items-center justify-center gap-2">
+                <span className="h-3 w-3 rounded-full" style={{ backgroundColor: turnColor }} />
+                Sıra {turnName || 'oyuncu'} oyuncusunda.
+              </span>
             </div>
           )}
           {phase === 'voting' && (
@@ -812,12 +957,37 @@ function Game(props) {
               Çizim kilitlendi. Oylar bekleniyor.
             </div>
           )}
-          {room.settings.drawMode === 'turns' && phase === 'drawing' && (
+          {phase === 'drawing' && (
             <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-lg border border-slate-300 bg-white/92 px-3 py-2 text-sm font-black text-slate-800 shadow">
               <span className="h-3 w-3 rounded-full" style={{ backgroundColor: turnColor }} />
-              <span className="text-slate-500">Sıra:</span> {turnName || '-'} <span className="font-mono text-amber-600">{formatTime(timer.turn?.timeLeft || 0)}</span>
+              <span className="text-slate-500">Sıra:</span> {turnName || '-'}
+              <span className="rounded bg-teal-100 px-1.5 py-0.5 text-xs text-teal-700">{room.turn?.currentTurnNumber || 1}/{room.turn?.turnsPerPlayer || 2}</span>
+              <span className="font-mono text-amber-600">{formatTime(timer.turn?.timeLeft || 0)}</span>
             </div>
           )}
+          <div className="absolute right-4 top-4 flex overflow-hidden rounded-lg border border-slate-300 bg-white/92 text-slate-800 shadow">
+            <button
+              onClick={() => applyViewportZoom(viewport.scale * 1.2)}
+              className="h-9 w-10 border-r border-slate-300 text-lg font-black transition hover:bg-slate-100"
+              title="Yakınlaştır"
+            >
+              +
+            </button>
+            <button
+              onClick={() => applyViewportZoom(viewport.scale / 1.2)}
+              className="h-9 w-10 border-r border-slate-300 text-lg font-black transition hover:bg-slate-100"
+              title="Uzaklaştır"
+            >
+              -
+            </button>
+            <button
+              onClick={resetZoom}
+              className="inline-flex h-9 w-10 items-center justify-center transition hover:bg-slate-100"
+              title="Zoom sıfırla"
+            >
+              <RotateCcw className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       </Panel>
 
@@ -830,6 +1000,9 @@ function Game(props) {
             setSize={setSize}
             isHost={isHost}
             emitSocket={emitSocket}
+            localCanUndo={localCanUndo}
+            handleUndoStroke={handleUndoStroke}
+            handleFinishTurn={handleFinishTurn}
             room={room}
           />
         )}
@@ -863,9 +1036,10 @@ function Game(props) {
   );
 }
 
-function DrawingTools({ tool, setTool, size, setSize, isHost, emitSocket, room }) {
+function DrawingTools({ tool, setTool, size, setSize, isHost, emitSocket, localCanUndo, handleUndoStroke, handleFinishTurn, room }) {
   const myColor = room.me?.color || '#111827';
   const turnColor = room.turn?.currentPlayerColor || '#64748b';
+  const isMyTurn = !!room.me?.canDraw;
 
   return (
     <div className="space-y-5">
@@ -901,6 +1075,26 @@ function DrawingTools({ tool, setTool, size, setSize, isHost, emitSocket, room }
         <div className="mt-2 text-sm font-bold text-slate-300">{size}px</div>
       </label>
 
+      {isMyTurn && (
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={handleUndoStroke}
+            disabled={!room.me?.canUndo && !localCanUndo}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-3 font-bold text-slate-100 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            <RotateCcw className="h-5 w-5" />
+            Geri al
+          </button>
+          <button
+            onClick={handleFinishTurn}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-amber-400 px-3 py-3 font-black text-slate-950 transition hover:bg-amber-300"
+          >
+            <Send className="h-5 w-5" />
+            Geç
+          </button>
+        </div>
+      )}
+
       {isHost && (
         <button
           onClick={() => emitSocket('clear-canvas')}
@@ -911,15 +1105,16 @@ function DrawingTools({ tool, setTool, size, setSize, isHost, emitSocket, room }
         </button>
       )}
 
-      {room.settings.drawMode === 'turns' && (
-        <div className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-sm text-slate-300">
-          <div className="mb-1 text-xs font-black uppercase tracking-widest text-slate-500">Şu an çizen</div>
-          <div className="flex items-center gap-2">
-            <span className="h-3.5 w-3.5 rounded-full" style={{ backgroundColor: turnColor }} />
-            <span className="font-black text-white">{room.turn.currentPlayerName || '-'}</span>
-          </div>
+      <div className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-sm text-slate-300">
+        <div className="mb-1 text-xs font-black uppercase tracking-widest text-slate-500">Şu an çizen</div>
+        <div className="flex items-center gap-2">
+          <span className="h-3.5 w-3.5 rounded-full" style={{ backgroundColor: turnColor }} />
+          <span className="font-black text-white">{room.turn.currentPlayerName || '-'}</span>
+          <span className="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-xs font-black text-teal-200">
+            {room.turn?.currentTurnNumber || 1}/{room.turn?.turnsPerPlayer || 2}
+          </span>
         </div>
-      )}
+      </div>
     </div>
   );
 }
