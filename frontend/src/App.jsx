@@ -16,7 +16,6 @@ import {
   Send,
   Sparkles,
   Target,
-  Trash2,
   Trophy,
   Users,
   Volume2,
@@ -131,7 +130,6 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [viewport, setViewport] = useState({ scale: 1, offsetX: 0, offsetY: 0 });
   const [localCanUndo, setLocalCanUndo] = useState(false);
-  const [showRoundIntro, setShowRoundIntro] = useState(false);
 
   const canvasRef = useRef(null);
   const socketRef = useRef(null);
@@ -146,7 +144,6 @@ export default function App() {
   const hasMovedRef = useRef(false);
   const currentStrokeIdRef = useRef('');
   const toastTimerRef = useRef(null);
-  const roundIntroTimerRef = useRef(null);
   const previousPhaseRef = useRef('');
   const previousTimeLeftRef = useRef(null);
   const previousTurnIdRef = useRef('');
@@ -175,6 +172,14 @@ export default function App() {
     if (!currentSocket) return;
     if (payload === undefined) currentSocket.emit(eventName);
     else currentSocket.emit(eventName, payload);
+  }, []);
+
+  const notifyHostUnavailable = useCallback(() => {
+    const currentRoom = roomRef.current;
+    const currentSocket = socketRef.current;
+    if (!currentSocket || !currentRoom?.me?.isHost) return;
+    if ((currentRoom.players || []).filter((player) => player.connected).length < 2) return;
+    currentSocket.emit('host-unavailable');
   }, []);
 
   const clearCanvasSurface = useCallback(() => {
@@ -321,16 +326,10 @@ export default function App() {
       if (nextRoom.me?.name) localStorage.setItem(NAME_KEY, nextRoom.me.name);
 
       if (previousPhase && previousPhase !== nextRoom.phase) {
-        if (nextRoom.phase === 'drawing') {
-          play('start');
-          clearTimeout(roundIntroTimerRef.current);
-          setShowRoundIntro(true);
-          roundIntroTimerRef.current = setTimeout(() => setShowRoundIntro(false), 3200);
-        }
+        if (nextRoom.phase === 'drawing') play('start');
         if (nextRoom.phase === 'voting') play('vote');
         if (nextRoom.phase === 'result') play('result');
       }
-      if (nextRoom.phase !== 'drawing') setShowRoundIntro(false);
     });
 
     nextSocket.on('timer-tick', (nextTimer) => {
@@ -366,11 +365,24 @@ export default function App() {
 
     return () => {
       clearTimeout(toastTimerRef.current);
-      clearTimeout(roundIntroTimerRef.current);
       nextSocket.disconnect();
       socketRef.current = null;
     };
   }, [clearCanvasSurface, drawOperation, play, replayCanvas, showToast]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') notifyHostUnavailable();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', notifyHostUnavailable);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', notifyHostUnavailable);
+    };
+  }, [notifyHostUnavailable]);
 
   const runWithAck = (eventName, payload) => {
     const currentSocket = socketRef.current;
@@ -665,8 +677,6 @@ export default function App() {
                 localCanUndo={localCanUndo}
                 handleUndoStroke={handleUndoStroke}
                 handleFinishTurn={handleFinishTurn}
-                showRoundIntro={showRoundIntro}
-                closeRoundIntro={() => setShowRoundIntro(false)}
                 guess={guess}
                 setGuess={setGuess}
                 submitGuess={submitGuess}
@@ -831,14 +841,14 @@ function Lobby({ room, isHost, settings, updateGameSetting, handleStartGame, emi
         <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-700 bg-slate-950/94 px-4 py-4 shadow-2xl backdrop-blur">
           <button
             onClick={() => emitSocket('toggle-ready')}
-            className={`mx-auto flex w-full max-w-lg animate-pulse items-center justify-center gap-2 rounded-lg border-2 px-5 py-4 text-lg font-black shadow-2xl transition ${
+            className={`ready-border-pulse mx-auto flex w-full max-w-lg items-center justify-center gap-2 rounded-lg border-2 bg-slate-900 px-5 py-4 text-lg font-black shadow-2xl transition ${
               room.me?.ready
-                ? 'border-teal-200 bg-teal-400 text-slate-950 shadow-teal-400/30'
-                : 'border-amber-200 bg-amber-400 text-slate-950 shadow-amber-400/30'
+                ? 'border-teal-200 text-teal-100 shadow-teal-400/30'
+                : 'border-amber-200 text-amber-100 shadow-amber-400/30'
             }`}
           >
             <Check className="h-6 w-6" />
-            {room.me?.ready ? 'Hazırsın' : 'Hazır Ol'}
+            {room.me?.ready ? 'Oyuna Hazırsın' : 'Oyuna Hazırım'}
           </button>
         </div>
       )}
@@ -917,8 +927,6 @@ function Game(props) {
     localCanUndo,
     handleUndoStroke,
     handleFinishTurn,
-    showRoundIntro,
-    closeRoundIntro,
     guess,
     setGuess,
     submitGuess,
@@ -930,27 +938,6 @@ function Game(props) {
 
   return (
     <main className="relative min-h-[calc(100vh-68px)] px-3 pb-56 pt-24 sm:px-4">
-      {showRoundIntro && phase === 'drawing' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/88 px-4 backdrop-blur-md">
-          <div className="w-full max-w-2xl rounded-lg border border-teal-300/40 bg-slate-900 p-6 text-center shadow-2xl shadow-teal-950/50">
-            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-lg bg-teal-400 text-slate-950">
-              <Pencil className="h-7 w-7" />
-            </div>
-            <div className="text-sm font-black uppercase tracking-widest text-teal-200">Tur başladı</div>
-            <div className="mt-3 text-4xl font-black text-amber-200">{room.me?.word || 'Kelime geliyor'}</div>
-            <div className="mt-4 text-base font-semibold leading-7 text-slate-300">
-              Sıra sana geldiğinde çiz. Her oyuncunun iki çizim hakkı var; `Geç` ile hakkını erken bitirebilirsin.
-            </div>
-            <button
-              onClick={closeRoundIntro}
-              className="mt-6 rounded-lg bg-teal-400 px-5 py-3 font-black text-slate-950 transition hover:bg-teal-300"
-            >
-              Çizime geç
-            </button>
-          </div>
-        </div>
-      )}
-
       <div className="fixed inset-x-0 top-[66px] z-30 border-b border-slate-800 bg-slate-950/94 px-3 py-3 shadow-2xl backdrop-blur sm:px-4">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-2">
           <div className="min-w-0">
@@ -1038,10 +1025,9 @@ function Game(props) {
             setTool={setTool}
             size={size}
             setSize={setSize}
-            emitSocket={emitSocket}
-              localCanUndo={localCanUndo}
-              handleUndoStroke={handleUndoStroke}
-              handleFinishTurn={handleFinishTurn}
+            localCanUndo={localCanUndo}
+            handleUndoStroke={handleUndoStroke}
+            handleFinishTurn={handleFinishTurn}
               room={room}
             />
           )}
@@ -1076,7 +1062,7 @@ function Game(props) {
   );
 }
 
-function DrawingTools({ tool, setTool, size, setSize, emitSocket, localCanUndo, handleUndoStroke, handleFinishTurn, room }) {
+function DrawingTools({ tool, setTool, size, setSize, localCanUndo, handleUndoStroke, handleFinishTurn, room }) {
   const myColor = room.me?.color || '#111827';
   const turnColor = room.turn?.currentPlayerColor || '#64748b';
   const isMyTurn = !!room.me?.canDraw;
@@ -1145,15 +1131,6 @@ function DrawingTools({ tool, setTool, size, setSize, emitSocket, localCanUndo, 
               Geç
             </button>
           </>
-        )}
-        {isMyTurn && (
-          <button
-            onClick={() => emitSocket('clear-canvas')}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-rose-700 bg-rose-950 px-4 py-3 font-bold text-rose-100 transition hover:bg-rose-900 sm:col-span-2 lg:col-span-1"
-          >
-            <Trash2 className="h-5 w-5" />
-            Bu hakkı temizle
-          </button>
         )}
       </div>
     </div>

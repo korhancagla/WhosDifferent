@@ -25,3 +25,16 @@
     opacity: 0;
   }
 }
+
+@keyframes ready-border {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.95), 0 20px 50px rgba(0, 0, 0, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(251, 191, 36, 0), 0 20px 50px rgba(0, 0, 0, 0.45);
+  }
+}
+
+.ready-border-pulse {
+  animation: ready-border 0.55s ease-in-out infinite;
+}
